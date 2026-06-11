@@ -33,10 +33,10 @@ class ArtiPlugin:
                 print(landmark_names, angoli)
                 try:
                     punti = self.get_landmark_points_by_names(self.viewer.landmarks, landmark_names)
-                    print("punti", punti)
+                    print("points", punti)
                     nuova_spezzata = self.ricalcola_spezzata_orientata(landmark_names, punti, angoli)
                 except ValueError as e:
-                    print("Errore:", e)
+                    print("Error:", e)
             else:
                 punti = self.get_landmark_points_by_names(self.viewer.landmarks, landmark_names)
                 print("LLL", landmark_names)
@@ -58,19 +58,19 @@ class ArtiPlugin:
     def get_landmark_points_by_names(self, landmark_dict: dict, names: list[str]) -> list[tuple]:
         missing = [name for name in names if name not in landmark_dict]
         if missing:
-            raise ValueError(f"I seguenti nomi non sono stati trovati nei landmark: {missing}")
+            raise ValueError(f"The following names were not found in the landmarks: {missing}")
 
         punti = []
         for name in names:
             dati = landmark_dict[name]
             if not dati["coordinates"]:
-                raise ValueError(f"Il landmark '{name}' non ha coordinate assegnate.")
+                raise ValueError(f"The landmark '{name}' has no assigned coordinates.")
             punti.append(dati["coordinates"])  # un tuple (x, y)
         return punti
 
     def ricalcola_spezzata_orientata(self, landmark_names: list[str], punti: list[tuple], angoli: list[float]) -> list[tuple]:
         if len(punti) < 2 or len(punti) != len(angoli):
-            raise ValueError("Hai bisogno di n punti e n-1 angoli tra i segmenti")
+            raise ValueError("You need n points and n-1 angles between the segments")
         # print(punti)
         distanze = [math.hypot(punti[i + 1][0] - punti[i][0], punti[i + 1][1] - punti[i][1]) for i in range(len(punti) - 1)]
 

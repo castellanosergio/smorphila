@@ -18,7 +18,7 @@ class LandmarkSemilandmarkDialog(QDialog):
     def __init__(self, viewer, default_n=10):
         super().__init__(viewer)
         self.viewer = viewer
-        self.setWindowTitle("Seleziona modalità")
+        self.setWindowTitle("Select mode")
 
         layout = QVBoxLayout(self)
         self.radio_group = QButtonGroup(self)
@@ -29,18 +29,18 @@ class LandmarkSemilandmarkDialog(QDialog):
         self.radio_group.addButton(self.radio_landmarks)
         self.radio_group.addButton(self.radio_semilandmarks)
 
-        layout.addWidget(QLabel("Scegli modalità:"))
+        layout.addWidget(QLabel("Choose mode:"))
         layout.addWidget(self.radio_landmarks)
         layout.addWidget(self.radio_semilandmarks)
 
         self.landmark_combo = QComboBox()
         self.landmark_combo.addItems(self.viewer.landmark_names)
-        layout.addWidget(QLabel("Scegli un landmark:"))
+        layout.addWidget(QLabel("Choose a landmark:"))
         layout.addWidget(self.landmark_combo)
 
         self.curva_combo = QComboBox()
         self.curva_combo.addItems(self.viewer.semilandmarks.keys())
-        layout.addWidget(QLabel("Scegli una curva:"))
+        layout.addWidget(QLabel("Choose a curve:"))
         layout.addWidget(self.curva_combo)
 
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
@@ -87,7 +87,7 @@ class SpezzataCurva:
         if self.viewer.inserisci_landmarks.active:
             self.viewer.inserisci_landmarks.deactivate()
         QMessageBox.information(
-            self.viewer, "Inserimento Punti", "Clicca due volte per terminare."
+            self.viewer, "Point entry", "Double-click to finish."
         )
 
     def handle_click(self, pos: QPointF):
@@ -101,7 +101,7 @@ class SpezzataCurva:
     def handle_double_click(self):
         # self.viewer.layer_manager.layers["preview"] = None
         if len(self.points) < 2:
-            QMessageBox.warning(self.viewer, "Errore", "Inserisci almeno due punti.")
+            QMessageBox.warning(self.viewer, "Error", "Enter at least two points.")
             return
 
         dialog = LandmarkSemilandmarkDialog(self.viewer, default_n=10)
@@ -113,7 +113,7 @@ class SpezzataCurva:
             name = dialog.get_selected_landmark()
             punti = self.straighten_polyline(self.qpoints)
             self.viewer.landmarks[name]["coordinates"] = (punti[-1].x(), punti[-1].y())
-            print("PUNTO AGGIUNTO", self.viewer.landmarks[name]["coordinates"])
+            print("POINT ADDED", self.viewer.landmarks[name]["coordinates"])
             self.viewer.layer_manager.clear_layer(self.layer_name)
             self.viewer.layer_manager.clear_layer(name)
             self.viewer.layer_manager.draw_points(
@@ -141,10 +141,10 @@ class SpezzataCurva:
                 sottocurva, nsemilandmarks
             )
             self.viewer.semilandmarks[nome_spezzata]["coordinates"] = contorno_spezzato
-            print("CONTORNO SPEZZATO", contorno_spezzato)
+            print("SEGMENTED CONTOUR", contorno_spezzato)
             # trasformo lista di tuple in lista QPointF
             contorno_punti = [QPointF(x, y) for x, y in contorno_spezzato]
-            print("CONTORNO PUNTI", contorno_punti)
+            print("CONTOUR POINTS", contorno_punti)
             self.viewer.layer_manager.clear_layer(self.layer_name)
             self.viewer.layer_manager.draw_points(
                 self.layer_name, contorno_punti, color=self.color_points

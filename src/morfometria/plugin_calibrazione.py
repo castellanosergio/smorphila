@@ -20,7 +20,7 @@ import math
 class ScaleDialog(QDialog):
     def __init__(self, pixel_length, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Calibrazione scala")
+        self.setWindowTitle("Scale calibration")
 
         self.pixel_length = pixel_length
 
@@ -35,15 +35,15 @@ class ScaleDialog(QDialog):
         self.unit_combo = QComboBox()
         self.unit_combo.addItems(["mm", "cm", "m", "µm"])
 
-        apply_btn = QPushButton("Applica")
+        apply_btn = QPushButton("Apply")
         apply_btn.clicked.connect(self.accept)
 
         layout = QVBoxLayout()
-        layout.addWidget(QLabel("Lunghezza in pixel:"))
+        layout.addWidget(QLabel("Length in pixels:"))
         layout.addWidget(self.pixel_display)
-        layout.addWidget(QLabel("Lunghezza reale:"))
+        layout.addWidget(QLabel("Real length:"))
         layout.addWidget(self.real_spin)
-        layout.addWidget(QLabel("Unità:"))
+        layout.addWidget(QLabel("Unit:"))
         layout.addWidget(self.unit_combo)
         layout.addWidget(apply_btn)
 
@@ -72,11 +72,11 @@ class CalibrationPlugin:
         self.viewer.disattiva_zoom()
         self.viewer.image.setCursor(Qt.CrossCursor)
         self.viewer.image.setFocus()
-        QMessageBox.information(self.viewer, "Calibrazione", "Seleziona due punti a distanza nota")
+        QMessageBox.information(self.viewer, "Calibration", "Select two points at a known distance")
         self.count = 0
         self.cal_points = []
         self.viewer.image.setCursor(Qt.CrossCursor)
-        print("INIZIO CALIBRAZIONE")
+        print("STARTING CALIBRATION")
 
     def deactivate(self):
         self.active = False
@@ -87,7 +87,7 @@ class CalibrationPlugin:
         self.viewer.mode_label.setText("")
 
     def handle_click(self, pos):
-        print("CALIBRAZIONE IN ATto")
+        print("CALIBRATION IN PROGRESS")
         self.count += 1
         self.cal_points.append(pos)
         self.viewer.layer_manager.draw_points("calibration", self.cal_points, color=QColor(255, 0, 0, 180))
@@ -107,6 +107,6 @@ class CalibrationPlugin:
             self.viewer.scale = s
             self.viewer.scale_unit = unit
 
-            self.viewer.scale_label.setText(f"Scala: {self.viewer.scale:.4f} {unit}/px")
+            self.viewer.scale_label.setText(f"Scale: {self.viewer.scale:.4f} {unit}/px")
 
-            self.viewer.status_bar.showMessage(f"La scala è stata settata ({self.viewer.scale:.4f} {unit}/px)")
+            self.viewer.status_bar.showMessage(f"The scale has been set ({self.viewer.scale:.4f} {unit}/px)")

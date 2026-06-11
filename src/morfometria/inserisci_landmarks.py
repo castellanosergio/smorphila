@@ -10,7 +10,7 @@ class LandmarkPlugin:
 
     def activate(self):
         self.active = True
-        # Disattiva lo zoom
+        # Disable zoom
         self.viewer.disattiva_zoom()
         self.viewer.image.setCursor(Qt.CrossCursor)
         self.viewer.image.setFocus()
@@ -19,8 +19,8 @@ class LandmarkPlugin:
 
         QMessageBox.information(
             self.viewer,
-            "Inserimento Landmark",
-            "Seleziona un nome dalla lista e clicca sull'immagine per posizionare il landmark.",
+            "Landmark entry",
+            "Select a name from the list and click the image to place the landmark.",
         )
 
     def deactivate(self):
@@ -30,17 +30,17 @@ class LandmarkPlugin:
 
     def handle_click(self, name, pos):
         self.viewer.image.setCursor(Qt.CrossCursor)
-        # Salva la tupla (x, y) nel dizionario
+        # Save the (x, y) tuple in the dictionary
         self.viewer.landmarks[name]["coordinates"] = (pos.x(), pos.y())
         # print("----", self.viewer.landmarks)
-        # Costruisci lista delle coordinate esistenti
+        # Build the list of existing coordinates
         coordinate_punti = [
             v["coordinates"]
             for v in self.viewer.landmarks.values()
             if v["coordinates"] is not None
         ]
         # print("CCOORDINATES", coordinate_punti)
-        # Disegna i punti sul layer
+        # Draw the points on the layer
         if "landmarks" not in self.viewer.layer_manager.layers:
             self.viewer.layer_manager.create_layer("landmarks")
 
@@ -55,7 +55,7 @@ class LandmarkPlugin:
             "landmarks", lista_qpointf, color=QColor(255, 0, 0, 180)
         )
 
-        # Avanza nel combo box
+        # Advance in the combo box
         current_index = self.viewer.landmark_combo.currentIndex()
         if current_index < self.viewer.landmark_combo.count() - 1:
             self.viewer.landmark_combo.setCurrentIndex(current_index + 1)

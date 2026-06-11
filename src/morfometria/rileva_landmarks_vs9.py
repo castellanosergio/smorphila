@@ -55,7 +55,7 @@ class ClickableLabel(QLabel):
         elif self.viewer.inserisci_landmarks.active:
             mapped = self.map_to_pixmap_coordinates(event.position())
             name = self.viewer.landmark_combo.currentText()
-            print("NOME DEL LANDMARK", name)
+            print("LANDMARK NAME", name)
             self.viewer.inserisci_landmarks.handle_click(name, mapped)
             self.viewer.setCursor(Qt.CrossCursor)
 
@@ -236,14 +236,14 @@ class ImageViewer(QMainWindow):
         self.scaling_mode = QComboBox(self)
         self.scaling_mode.addItems(["Auto width", "Auto height", "Original size"])
         self.scaling_mode.setCurrentIndex(1)
-        grid.addWidget(QLabel("Scala immagine:"), 8, 0, 1, 1)
+        grid.addWidget(QLabel("Image scale:"), 8, 0, 1, 1)
         grid.addWidget(self.scaling_mode, 8, 1, 1, 1)
 
-        self.save_data_button = QPushButton("Salva dati")
+        self.save_data_button = QPushButton("Save data")
         self.save_data_button.clicked.connect(self.save_data)
         grid.addWidget(self.save_data_button, 8, 9, 1, 1)
 
-        self.reset_button = QPushButton("Reset posizioni")
+        self.reset_button = QPushButton("Reset positions")
         self.reset_button.clicked.connect(self.reset)
         grid.addWidget(self.reset_button, 8, 8, 1, 1)
 
@@ -268,11 +268,11 @@ class ImageViewer(QMainWindow):
         self.menu_bar.addMenu(landmarks_menu)
         self.menu_bar.addMenu(view_menu)
 
-        open_action = QAction("Apri", self)
+        open_action = QAction("Open", self)
         open_action.triggered.connect(self.load)
         file_menu.addAction(open_action)
 
-        toggle_layer_action = QAction("Mostra/Nascondi landmarks", self)
+        toggle_layer_action = QAction("Show/Hide landmarks", self)
         toggle_layer_action.triggered.connect(lambda: self.layer_manager.toggle_visibility("landmarks"))
         view_menu.addAction(toggle_layer_action)
 
@@ -284,11 +284,11 @@ class ImageViewer(QMainWindow):
 
 
         # Aggiunta plugin al menu Landmarks
-        spezzata_action = QAction("Allinea spezzata", self)
+        spezzata_action = QAction("Align polyline", self)
         spezzata_action.triggered.connect(self.spezzata_plugin.start)
         landmarks_menu.addAction(spezzata_action)
 
-        arti_action = QAction("Crea Spezzata Idealizzata", self)
+        arti_action = QAction("Create idealized polyline", self)
         arti_action.triggered.connect(self.plugin_arti.activate)
         landmarks_menu.addAction(arti_action)
 
@@ -297,12 +297,12 @@ class ImageViewer(QMainWindow):
         landmarks_menu.addAction(landmarks_action)
 
         # Aggiunta plugin menu Edit
-        rotate_action = QAction("Ruota immagine", self)
+        rotate_action = QAction("Rotate image", self)
         rotate_action.triggered.connect(self.rotate_image_dialog)
         edit_menu.addAction(rotate_action)
 
         # Aggiunta plugin menu Edit
-        align_action = QAction("Allinea immagine", self)
+        align_action = QAction("Align image", self)
         align_action.triggered.connect(self.image_aligner.align_image)
         edit_menu.addAction(align_action)
 
@@ -315,7 +315,7 @@ class ImageViewer(QMainWindow):
         # Ctrl + "1" → zoom in
         zoom_in_shortcut = QShortcut(QKeySequence("1"), self)
         zoom_in_shortcut.setContext(Qt.ApplicationShortcut)
-        zoom_in_shortcut.activated.connect(lambda: print("Zoom 1 attivato") or self.zoom_plus(1.1))
+        zoom_in_shortcut.activated.connect(lambda: print("Zoom 1 activated") or self.zoom_plus(1.1))
 
         # Ctrl + "-" → zoom out
         shortcut_zoom_out = QShortcut(QKeySequence("0"), self)
@@ -344,7 +344,7 @@ class ImageViewer(QMainWindow):
 
 
         self.show()
-        QTimer.singleShot(500, lambda: print("Focus iniziale:", self.focusWidget()))
+        QTimer.singleShot(500, lambda: print("Initial focus:", self.focusWidget()))
     
     def move_view_rect(self, dx, dy):
         if not hasattr(self, 'view_rect') or self.view_rect is None:
@@ -369,7 +369,7 @@ class ImageViewer(QMainWindow):
         
     def load(self):
         file_path, _ = QFileDialog.getOpenFileName(
-            self, "Scegli un'immagine", "", f"Immagini (*.{IMAGE_EXTENSION})"
+            self, "Choose an image", "", f"Images (*.{IMAGE_EXTENSION})"
         )
         if not file_path:
             return
@@ -412,7 +412,7 @@ class ImageViewer(QMainWindow):
         Inizializza la struttura dei landmark con lista di nomi.
         Ogni landmark ha: coordinate=[], color=None
         """
-        print("NOMI", nomi)
+        print("NAMES", nomi)
         self.landmarks = {
             nome: {
                 'coordinates': [],
@@ -422,7 +422,7 @@ class ImageViewer(QMainWindow):
         return self.landmarks
 
     def rotate_image_dialog(self):
-        angle, ok = QInputDialog.getDouble(self, "Ruota immagine", "Angolo (gradi):", 0.0, -360.0, 360.0, 1)
+        angle, ok = QInputDialog.getDouble(self, "Rotate image", "Angle (degrees):", 0.0, -360.0, 360.0, 1)
         if ok:
             transform = QTransform()
             transform.rotate(angle)
@@ -489,17 +489,17 @@ class ImageViewer(QMainWindow):
         full_rect = QRect(0, 0, self.pixmap.width(), self.pixmap.height())
         corrected_rect = sel_rect_original.intersected(full_rect)
 
-        print("[zoom_to_selection] selezione finale:", corrected_rect)
+        print("[zoom_to_selection] final selection:", corrected_rect)
         self.set_view_rect(corrected_rect)
         self.layer_manager.update_display()
         
 
     def zoom_plus(self, factor):
         if not hasattr(self, 'pixmap') or self.pixmap.isNull():
-            print("Nessuna immagine caricata, impossibile zoommare")
+            print("No image loaded; cannot zoom")
             return
 
-        print(f"[zoom_plus] chiamato con factor = {factor}, scale_factor = {self.scale_factor}")
+        print(f"[zoom_plus] called with factor = {factor}, scale_factor = {self.scale_factor}")
 
         # Scrollbar e viewport
         h_bar = self.scroll_area.horizontalScrollBar()
@@ -606,7 +606,7 @@ class ImageViewer(QMainWindow):
 
     
     def reset_all(self):
-        print("[reset_all] Reset globale in corso...")
+        print("[reset_all] Global reset in progress...")
 
         # Cancella immagine visualizzata
         self.image.clear()
@@ -646,7 +646,7 @@ class ImageViewer(QMainWindow):
         #  Aggiorna display
         self.layer_manager.update_display()
 
-        print("[reset_all] Completato")
+        print("[reset_all] Completed")
 
 
 if __name__ == "__main__":

@@ -42,7 +42,7 @@ class LayerManager:
 
         if name not in self.layers:
             self.create_layer(name)
-            print("ho creato il layer: ", name)
+            print("created layer: ", name)
 
         painter = QPainter(self.layers[name])
         painter.setPen(color)
@@ -124,7 +124,7 @@ class LayerManager:
                 punti = []
                 for nome, info in self.viewer.semilandmarks.items():
                     punti = info.get("coordinates")
-                    print(f"punti: {punti}")
+                    print(f"points: {punti}")
                     painter.setBrush(QColor(0, 255, 0, 180))
                     painter.setPen(Qt.NoPen)
                     for pt in punti:
@@ -158,7 +158,7 @@ class LayerManager:
 
     def clear_all_layers(self):
         """Cancella tutti i layer e aggiorna la visualizzazione"""
-        print("[LayerManager] clear_all_layers() chiamato")
+        print("[LayerManager] clear_all_layers() called")
         self.layers.clear()
         self.visible.clear()
         self.update_display()

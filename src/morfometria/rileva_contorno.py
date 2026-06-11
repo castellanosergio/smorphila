@@ -17,7 +17,7 @@ class ContourPlugin:
         
         view_rect = self.viewer.view_rect
         if view_rect is None:
-            print("[ContourPlugin] Nessuna selezione attiva.")
+            print("[ContourPlugin] No active selection.")
             return
 
         cropped = self.viewer.pixmap.copy(view_rect)

@@ -20,8 +20,8 @@ class ImageAligner:
 
         QMessageBox.information(
             self.viewer,
-            "Definizione assi",
-            "Clicca il punto che vuoi usare come origine (0,0), poi un secondo punto per definire la direzione dell'asse Y.",
+            "Axis definition",
+            "Click the point to use as the origin (0,0), then click a second point to define the Y-axis direction.",
         )
 
     def handle_click(self, pos):
@@ -46,7 +46,7 @@ class ImageAligner:
 
         if dx == 0 and dy == 0:
             QMessageBox.warning(
-                self.viewer, "Errore", "I due punti devono essere distinti."
+                self.viewer, "Error", "The two points must be distinct."
             )
             return
 
@@ -87,13 +87,13 @@ class ImageAligner:
         """
         QMessageBox.information(
             self.viewer,
-            "Trasformazione completata",
-            "L'immagine è stata centrata sull'origine e ruotata.",
+            "Transformation complete",
+            "The image has been centered on the origin and rotated.",
         )
         """
 
         self.viewer.status_bar.showMessage(
-            "Trasformazione completata: l'immagine è stata centrata sull'origine e ruotata."
+            "Transformation complete: the image has been centered on the origin and rotated."
         )
 
         self.viewer.layer_manager.clear_layer("axis_definition")

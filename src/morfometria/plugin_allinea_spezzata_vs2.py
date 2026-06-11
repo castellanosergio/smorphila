@@ -24,14 +24,14 @@ class SpezzataAligner:
 
     def handle_double_click(self):
         if len(self.points) < 2:
-            QMessageBox.warning(self.viewer, "Errore", "Inserisci almeno due punti.")
+            QMessageBox.warning(self.viewer, "Error", "Enter at least two points.")
             return
         aligned = self.straighten_polyline(self.points)
 
         # Chiedi se mostrare tutti i punti o solo primo/ultimo
         scelta = QMessageBox.question(
-            self.viewer, "Mostra punti",
-            "Vuoi visualizzare tutti i punti della spezzata?",
+            self.viewer, "Show points",
+            "Do you want to display all points in the polyline?",
             QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes
         )
         self.show_all_points = (scelta == QMessageBox.Yes)

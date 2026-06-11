@@ -26,15 +26,15 @@ class SpezzataAligner:
 
     def handle_double_click(self):
         if len(self.points) < 2:
-            QMessageBox.warning(self.viewer, "Errore", "Inserisci almeno due punti.")
+            QMessageBox.warning(self.viewer, "Error", "Enter at least two points.")
             return
         aligned = self.straighten_polyline(self.points)
 
-        # Chiedi se mostrare tutti i punti o solo primo/ultimo
+        # Ask whether to show all points or only the first/last
         scelta = QMessageBox.question(
             self.viewer,
-            "Mostra punti",
-            "Vuoi visualizzare tutti i punti della spezzata?",
+            "Show points",
+            "Do you want to display all points in the polyline?",
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.Yes,
         )
@@ -43,11 +43,11 @@ class SpezzataAligner:
         if not self.show_all_points and len(aligned) > 2:
             aligned = [aligned[0], aligned[-1]]
 
-        self.points = aligned  # mantieni solo quelli allineati
+        self.points = aligned  # keep only the aligned ones
         self.active = False
         self.viewer.image.setCursor(Qt.OpenHandCursor)
 
-        # Disegna su layer
+        # Draw on the layer
         self.draw_on_layer()
 
     def straighten_polyline(self, points):
@@ -75,30 +75,30 @@ class SpezzataAligner:
         return aligned_points
 
     def draw_preview(self):
-        """Mostra in tempo reale i punti cliccati su layer"""
+        """Show the clicked points on the layer in real time."""
         self.viewer.layer_manager.clear_layer("spezzata")
         self.viewer.layer_manager.draw_points("spezzata", self.points, color=QColor(255, 255, 255, 150))
 
     def draw_on_layer(self):
-        """Disegna la spezzata finale su un layer"""
+        """Draw the final polyline on a layer."""
         if len(self.points) < 2:
             return
         self.viewer.layer_manager.clear_layer("spezzata")
         self.viewer.layer_manager.draw_points("spezzata", self.points, color=Qt.green)
 
     def determina_direzione_allineamento(self, angolo_rad):
-        # Converti l'angolo in gradi
+        # Convert the angle to degrees
         angolo_gradi = math.degrees(angolo_rad)
 
-        # Porta l'angolo nel range [0, 360)
+        # Normalize the angle to the [0, 360) range
         angolo_normalizzato = angolo_gradi % 360
 
-        # Determina la direzione secondo le soglie definite
+        # Determine the direction according to the defined thresholds
         if -45 <= angolo_gradi < 45 or angolo_normalizzato < 45 or angolo_normalizzato >= 315:
-            return 0  # Orizzontale (est)
+            return 0  # Horizontal (east)
         elif 45 <= angolo_normalizzato < 135:
-            return math.pi / 2  # Verticale (nord)
+            return math.pi / 2  # Vertical (north)
         elif 135 <= angolo_normalizzato < 225:
-            return math.pi  # Orizzontale opposta (ovest)
+            return math.pi  # Opposite horizontal (west)
         elif 225 <= angolo_normalizzato < 315:
-            return -math.pi / 2  # Verticale opposta (sud)
+            return -math.pi / 2  # Opposite vertical (south)

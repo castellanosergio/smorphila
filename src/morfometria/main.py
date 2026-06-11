@@ -110,7 +110,7 @@ class ClickableLabel(QLabel):
             mapped_pos = self.map_to_pixmap_coordinates(event.position())
             self.viewer.end_point = mapped_pos
 
-            # Disegna il rettangolo di selezione nel layer
+            # Draw the selection rectangle on the layer
             p1 = QPoint(int(self.viewer.start_point.x()), int(self.viewer.start_point.y()))
             p2 = QPoint(int(self.viewer.end_point.x()), int(self.viewer.end_point.y()))
             top_left = QPoint(min(p1.x(), p2.x()), min(p1.y(), p2.y()))
@@ -133,46 +133,46 @@ class ClickableLabel(QLabel):
             dx = event.position().x() - self.viewer.drag_start_pos.x()
             dy = event.position().y() - self.viewer.drag_start_pos.y()
 
-            # Scala in base al rapporto tra immagine e QLabel
+            # Scale according to the ratio between the image and the QLabel
             scale_x = self.viewer.pixmap.width() / self.size().width()
             scale_y = self.viewer.pixmap.height() / self.size().height()
             dx *= scale_x
             dy *= scale_y
 
-            # Crea il nuovo rettangolo traslato
+            # Create the translated rectangle
             new_rect = QRect(self.viewer.view_rect)
             new_rect.translate(-int(dx), -int(dy))
 
-            # Blocca il rettangolo entro i bordi dell’immagine
+            # Keep the rectangle within the image boundaries
             full_rect = QRect(0, 0, self.viewer.pixmap.width(), self.viewer.pixmap.height())
 
-            # Correzione bordo sinistro
+            # Correct the left edge
             if new_rect.left() < full_rect.left():
                 new_rect.moveLeft(full_rect.left())
 
-            # Correzione bordo destro
+            # Correct the right edge
             if new_rect.right() > full_rect.right():
                 new_rect.moveRight(full_rect.right())
 
-            # Correzione bordo superiore
+            # Correct the top edge
             if new_rect.top() < full_rect.top():
                 new_rect.moveTop(full_rect.top())
 
-            # Correzione bordo inferiore
+            # Correct the bottom edge
             if new_rect.bottom() > full_rect.bottom():
                 new_rect.moveBottom(full_rect.bottom())
 
-            # Aggiorna view_rect
+            # Update view_rect
             self.viewer.view_rect = new_rect
 
-            # Aggiorna immagine visualizzata
+            # Update the displayed image
             container_size = self.viewer.scroll_area.viewport().size()
             cropped = self.viewer.pixmap.copy(self.viewer.view_rect)
             scaled = cropped.scaled(container_size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
             self.viewer.scaled_pixmap = scaled
             self.setPixmap(scaled)
 
-            # Imposta la nuova posizione iniziale per il drag successivo
+            # Set the new starting position for the next drag
             self.viewer.drag_start_pos = event.position()
 
     def mouseReleaseEvent(self, event):
@@ -181,11 +181,11 @@ class ClickableLabel(QLabel):
             self.viewer.end_point = mapped_pos
             self.viewer.selecting = False
 
-            # Pulisce il layer temporaneo del rettangolo
+            # Clear the temporary rectangle layer
             self.viewer.layer_manager.delete_layer("zoom_preview")
             self.viewer.layer_manager.update_display()
 
-            # Esegue lo zoom
+            # Perform the zoom
             self.viewer.zoom_to_selection()
             return
 
@@ -200,7 +200,7 @@ class ClickableLabel(QLabel):
         mapped_x = pos.x() - offset_x
         mapped_y = pos.y() - offset_y
 
-        # Correggi rispetto alla view_rect (per zoom successivi)
+        # Correct relative to view_rect (for subsequent zoom operations)
         scale_x = self.viewer.view_rect.width() / self.viewer.scaled_pixmap.width()
         scale_y = self.viewer.view_rect.height() / self.viewer.scaled_pixmap.height()
 
@@ -228,7 +228,7 @@ class ImageViewer(QMainWindow):
         self.drag_start_pos = None
         self.selecting = False
 
-        # inizializzo lista landamarks, semilandmarks, scale
+        # Initialize landmarks, semilandmarks, and scale
         self.scale = None
         self.scale_unit = ""
         self.angle_deg = 0
@@ -270,7 +270,7 @@ class ImageViewer(QMainWindow):
         self.scaling_mode = QComboBox(self)
         self.scaling_mode.addItems(["Auto width", "Auto height", "Original size"])
         self.scaling_mode.setCurrentIndex(1)
-        self.scale_label = QLabel("Scala immagine:")
+        self.scale_label = QLabel("Image scale:")
         grid.addWidget(self.scale_label, 8, 0, 1, 1)
         grid.addWidget(self.scaling_mode, 8, 1, 1, 1)
 
@@ -279,7 +279,7 @@ class ImageViewer(QMainWindow):
         grid.addWidget(QLabel("Landmarks"), 8, 2, 1, 1)
         grid.addWidget(self.landmark_combo, 8, 3, 1, 1)
 
-        self.reset_button = QPushButton("Reset posizioni")
+        self.reset_button = QPushButton("Reset positions")
         self.reset_button.clicked.connect(self.reset)
         grid.addWidget(self.reset_button, 8, 4, 1, 1)
 
@@ -293,7 +293,7 @@ class ImageViewer(QMainWindow):
         self.zoom_out_button.clicked.connect(self.reset_view_rect)
         grid.addWidget(self.zoom_out_button, 8, 6, 1, 1)
 
-        self.save_data_button = QPushButton("Salva dati")
+        self.save_data_button = QPushButton("Save data")
         self.save_data_button.clicked.connect(self.save_data)
         grid.addWidget(self.save_data_button, 8, 9, 1, 1)
 
@@ -314,15 +314,15 @@ class ImageViewer(QMainWindow):
         self.menu_bar.addMenu(landmarks_menu)
         self.menu_bar.addMenu(view_menu)
 
-        open_action = QAction("Apri immagine", self)
+        open_action = QAction("Open image", self)
         open_action.triggered.connect(self.load)
         file_menu.addAction(open_action)
 
-        toggle_layer_action = QAction("Mostra/Nascondi landmarks", self)
+        toggle_layer_action = QAction("Show/Hide landmarks", self)
         toggle_layer_action.triggered.connect(lambda: self.layer_manager.toggle_visibility("landmarks"))
         view_menu.addAction(toggle_layer_action)
 
-        # Plugin: layer manager e strumenti
+        # Plugins: layer manager and tools
         self.layer_manager = LayerManager(self)
         self.spezzata_plugin = SpezzataAligner(self)
         self.inserisci_landmarks = LandmarkPlugin(self)
@@ -332,58 +332,58 @@ class ImageViewer(QMainWindow):
         self.calibrazione = CalibrationPlugin(self)
         self.gestione_layers = LayerPlugin(self)
 
-        # Aggiunta plugin al menu Landmarks
-        spezzata_action = QAction("Allinea spezzata (CTRL+S)", self)
+        # Add plugin to the Landmarks menu
+        spezzata_action = QAction("Align polyline (CTRL+S)", self)
         spezzata_action.triggered.connect(self.spezzata_plugin.start)
         landmarks_menu.addAction(spezzata_action)
 
-        # Aggiunta plugin al menu Landmarks
-        arti_action = QAction("Crea Spezzata Idealizzata", self)
+        # Add plugin to the Landmarks menu
+        arti_action = QAction("Create idealized polyline", self)
         arti_action.triggered.connect(self.plugin_arti.activate)
         landmarks_menu.addAction(arti_action)
 
-        # Aggiunta plugin al menu Landmarks
+        # Add plugin to the Landmarks menu
         landmarks_action = QAction("Add landmarks (CTRL+L)", self)
         landmarks_action.triggered.connect(self.inserisci_landmarks.activate)
         landmarks_menu.addAction(landmarks_action)
 
-        # Aggiunta plugin al menu Landmarks
+        # Add plugin to the Landmarks menu
         contour_action = QAction("Find contours", self)
         contour_action.triggered.connect(self.rileva_contorno.extract_contours)
         landmarks_menu.addAction(contour_action)
 
-        # Aggiunta plugin al menu Landmarks
-        spezzatacurva_action = QAction("SemiLandmarks manuali", self)
+        # Add plugin to the Landmarks menu
+        spezzatacurva_action = QAction("Manual semilandmarks", self)
         spezzatacurva_action.triggered.connect(self.spezzata_curva.start)
         landmarks_menu.addAction(spezzatacurva_action)
 
-        # Aggiunta plugin menu Edit
-        rotate_action = QAction("Ruota immagine", self)
+        # Add plugin to the Edit menu
+        rotate_action = QAction("Rotate image", self)
         rotate_action.triggered.connect(self.rotate_image_dialog)
         edit_menu.addAction(rotate_action)
 
-        # Aggiunta plugin menu Edit
-        align_action = QAction("Allinea immagine", self)
+        # Add plugin to the Edit menu
+        align_action = QAction("Align image", self)
         align_action.triggered.connect(self.image_aligner.align_image)
         edit_menu.addAction(align_action)
 
-        # Aggiunta plugin Calibrazione
-        calibrazione_action = QAction("Calibra scala", self)
+        # Add calibration plugin
+        calibrazione_action = QAction("Calibrate scale", self)
         calibrazione_action.triggered.connect(self.calibrazione.activate)
         edit_menu.addAction(calibrazione_action)
 
-        # Aggiunta plugin Gestion_layer
-        gestisci_action = QAction("Gestisci layers", self)
+        # Add layer management plugin
+        gestisci_action = QAction("Manage layers", self)
         gestisci_action.triggered.connect(self.gestione_layers.activate)
         view_menu.addAction(gestisci_action)
 
         # SHORTCUTS
 
-        # Ctrl+L → attiva landmarks
+        # Ctrl+L -> activate landmarks
         shortcut_landmark = QShortcut(QKeySequence("Ctrl+L"), self)
         shortcut_landmark.activated.connect(self.inserisci_landmarks.activate)
 
-        # Ctrl+S → attiva landmarks
+        # Ctrl+S -> activate landmarks
         shortcut_landmark = QShortcut(QKeySequence("Ctrl+S"), self)
         shortcut_landmark.activated.connect(self.spezzata_plugin.start)
 
@@ -405,11 +405,11 @@ class ImageViewer(QMainWindow):
         shortcut_zoom_out2 = QShortcut(QKeySequence("-"), self)
         shortcut_zoom_out2.activated.connect(lambda: self.zoom_plus(0.9))
 
-        # Esc → disattiva tutto
+        # Esc -> deactivate everything
         shortcut_esc = QShortcut(QKeySequence("Escape"), self)
         shortcut_esc.activated.connect(self.disattiva_tutti_i_plugin)
 
-        # Shortcut Frecce
+        # Arrow key shortcuts
         shortcut_left = QShortcut(QKeySequence(Qt.Key_Left), self)
         shortcut_left.activated.connect(lambda: self.move_view_rect(-1, 0))
 
@@ -422,12 +422,12 @@ class ImageViewer(QMainWindow):
         shortcut_down = QShortcut(QKeySequence(Qt.Key_Down), self)
         shortcut_down.activated.connect(lambda: self.move_view_rect(0, 1))
 
-        # Dai il focus a un widget che può ricevere eventi
+        # Give focus to a widget that can receive events
         self.central_widget.setFocusPolicy(Qt.StrongFocus)
         self.central_widget.setFocus()
 
         self.show()
-        QTimer.singleShot(500, lambda: print("Focus iniziale:", self.focusWidget()))
+        QTimer.singleShot(500, lambda: print("Initial focus:", self.focusWidget()))
 
     def move_view_rect(self, dx, dy):
         if not hasattr(self, "view_rect") or self.view_rect is None:
@@ -435,26 +435,26 @@ class ImageViewer(QMainWindow):
         step = int(self.view_rect.width() * 0.1)
         dx *= step
         dy *= step
-        # Crea una copia del rettangolo corrente
+        # Create a copy of the current rectangle
         new_rect = QRect(self.view_rect)
 
-        # Sposta il rettangolo
+        # Move the rectangle
         new_rect.translate(dx, dy)
 
-        # Limita il rettangolo ai bordi dell'immagine
+        # Constrain the rectangle to the image boundaries
         full_rect = QRect(0, 0, self.pixmap.width(), self.pixmap.height())
         new_rect = new_rect.intersected(full_rect)
 
-        # Applica il nuovo rettangolo di vista
+        # Apply the new view rectangle
         self.set_view_rect(new_rect)
         self.layer_manager.update_display()
 
     def load(self):
         file_path, _ = QFileDialog.getOpenFileName(
             self,
-            "Scegli un'immagine",
+            "Choose an image",
             "",
-            f"Immagini ({IMAGE_EXTENSION});;All files (*)",
+            f"Images ({IMAGE_EXTENSION});;All files (*)",
         )
         if not file_path:
             return
@@ -487,7 +487,7 @@ class ImageViewer(QMainWindow):
         self.mass_value = d["mass_value"]
         landmarks_json = d["landmarks"]
 
-        # rendo possibile aggiungere o eliminare landmarks
+        # Make it possible to add or remove landmarks
         for key in self.landmarks:
             if key in landmarks_json:
                 self.landmarks[key] = landmarks_json[key]
@@ -499,7 +499,7 @@ class ImageViewer(QMainWindow):
                 self.layer_manager.create_layer("landmarks")
 
         self.semilandmarks_json = d["semilandmarks"]
-        # rendo possibile aggiungere o eliminare semilandmarks
+        # Make it possible to add or remove semilandmarks
 
         for key in self.semilandmarks:
             if self.semilandmarks[key]["landmarks"] == self.semilandmarks_json[key]["landmarks"]:
@@ -513,7 +513,7 @@ class ImageViewer(QMainWindow):
         self.rotate_angle(d["angle_deg"])
 
         if self.scale:
-            self.scale_label.setText(f"Scala: {self.scale:.4f} {self.scale_unit}/px")
+            self.scale_label.setText(f"Scale: {self.scale:.4f} {self.scale_unit}/px")
 
     def load_image(self, file_name):
         self.reset_all()
@@ -543,8 +543,8 @@ class ImageViewer(QMainWindow):
 
     def init_landmarks(self, nomi):
         """
-        Inizializza la struttura dei landmark con lista di nomi.
-        Ogni landmark ha: coordinate=[], color=None
+        Initialize the landmark structure from a list of names.
+        Each landmark has: coordinates=[], color=None
         """
 
         self.landmarks = {nome: {"coordinates": [], "color": None} for nome in nomi}
@@ -552,15 +552,15 @@ class ImageViewer(QMainWindow):
 
     def rotate_image_dialog(self):
         """
-        chiedi l'angolo di trotazione dell'immagine
+        Ask for the image rotation angle
         """
-        angle, ok = QInputDialog.getDouble(self, "Ruota immagine", "Angolo (gradi):", 0.0, -360.0, 360.0, 1)
+        angle, ok = QInputDialog.getDouble(self, "Rotate image", "Angle (degrees):", 0.0, -360.0, 360.0, 1)
         if ok:
             self.rotate_angle(angle)
 
     def rotate_angle(self, angle):
         """
-        ruota immagine di un angolo arbitrario
+        Rotate the image by an arbitrary angle
         """
         transform = QTransform()
         transform.rotate(angle)
@@ -569,7 +569,7 @@ class ImageViewer(QMainWindow):
         container_size = self.scroll_area.viewport().size()
         scaled_rotated = rotated_pixmap.scaled(container_size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
         self.scaled_pixmap = scaled_rotated
-        self.pixmap = rotated_pixmap  # aggiorna anche l'originale
+        self.pixmap = rotated_pixmap  # also update the original
         self.image.setPixmap(scaled_rotated)
         self.reset_view_rect()
         if self.angle_deg:
@@ -586,7 +586,7 @@ class ImageViewer(QMainWindow):
             self.layer_manager.update_display()
 
     def set_view_rect(self, sel_rect):
-        # Calcola rapporto container
+        # Compute the container ratio
         container_size = self.scroll_area.viewport().size()
         container_ratio = container_size.width() / container_size.height()
         sel_ratio = sel_rect.width() / sel_rect.height() if sel_rect.height() > 0 else 1
@@ -601,11 +601,11 @@ class ImageViewer(QMainWindow):
             dy = int((new_height - sel_rect.height()) / 2)
             adjusted_rect.adjust(0, -dy, 0, dy)
 
-        # Intersezione con l'immagine (limita ai bordi)
+        # Intersect with the image (constrain to boundaries)
         full_rect = QRect(0, 0, self.pixmap.width(), self.pixmap.height())
         self.view_rect = adjusted_rect.intersected(full_rect)
 
-        # Mostra la nuova porzione
+        # Show the new portion
         cropped = self.pixmap.copy(self.view_rect)
         scaled = cropped.scaled(container_size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
         self.scaled_pixmap = scaled
@@ -621,7 +621,7 @@ class ImageViewer(QMainWindow):
 
         sel_rect_original = QRect(int(min(x1, x2)), int(min(y1, y2)), int(abs(x2 - x1)), int(abs(y2 - y1)))
 
-        # Intersezione con i limiti dell'immagine originale
+        # Intersect with the original image boundaries
         full_rect = QRect(0, 0, self.pixmap.width(), self.pixmap.height())
         corrected_rect = sel_rect_original.intersected(full_rect)
 
@@ -630,21 +630,21 @@ class ImageViewer(QMainWindow):
 
     def zoom_plus(self, factor):
         if not hasattr(self, "pixmap") or self.pixmap.isNull():
-            print("Nessuna immagine caricata, impossibile zoommare")
+            print("No image loaded; cannot zoom")
             return
 
-        print(f"[zoom_plus] chiamato con factor = {factor}, scale_factor = {self.scale_factor}")
+        print(f"[zoom_plus] called with factor = {factor}, scale_factor = {self.scale_factor}")
 
-        # Scrollbar e viewport
+        # Scrollbar and viewport
         h_bar = self.scroll_area.horizontalScrollBar()
         v_bar = self.scroll_area.verticalScrollBar()
         viewport_size = self.scroll_area.viewport().size()
 
-        # Coordinate centro visibile nella viewport
+        # Coordinates of the visible center in the viewport
         cx = h_bar.value() + viewport_size.width() // 2
         cy = v_bar.value() + viewport_size.height() // 2
 
-        # Correggi per margine interno nel QLabel (centraggio)
+        # Correct for the inner margin in the QLabel (centering)
         label_size = self.image.size()
         pixmap_size = self.scaled_pixmap.size()
         offset_x = max(0, (label_size.width() - pixmap_size.width()) // 2)
@@ -652,31 +652,31 @@ class ImageViewer(QMainWindow):
         cx -= offset_x
         cy -= offset_y
 
-        # Conversione in coordinate dell'immagine originale
+        # Convert to original image coordinates
         scale_x = self.view_rect.width() / self.scaled_pixmap.width()
         scale_y = self.view_rect.height() / self.scaled_pixmap.height()
         center_x = self.view_rect.x() + cx * scale_x
         center_y = self.view_rect.y() + cy * scale_y
 
-        # Nuova dimensione desiderata
+        # Desired new size
         new_width = self.view_rect.width() / factor
         new_height = self.view_rect.height() / factor
 
-        # Limiti minimi: impedisci che il rettangolo diventi troppo piccolo
+        # Minimum limits: prevent the rectangle from becoming too small
         if factor < 1.0:
             min_rect_width = self.scroll_area.viewport().width() * scale_x
             min_rect_height = self.scroll_area.viewport().height() * scale_y
             new_width = max(new_width, min_rect_width)
             new_height = max(new_height, min_rect_height)
 
-        # Costruzione nuovo rettangolo centrato
+        # Build the new centered rectangle
         new_x = int(center_x - new_width / 2)
         new_y = int(center_y - new_height / 2)
         new_rect = QRect(new_x, new_y, int(new_width), int(new_height))
 
         self.set_view_rect(new_rect)
 
-        # Imposta nuovo punto di partenza per eventuale drag
+        # Set the new starting point for a possible drag
         cursor_pos = self.image.mapFromGlobal(QCursor.pos())
         self.drag_start_pos = cursor_pos
 
@@ -725,22 +725,22 @@ class ImageViewer(QMainWindow):
         self.selection_mode = False
         self.activate_selector_button.setChecked(False)
         self.calibrazione.deactivate()
-        # Imposta il cursore della QLabel
+        # Set the QLabel cursor
         self.image.setCursor(Qt.ArrowCursor)
 
-        # Imposta anche il cursore globale
+        # Also set the global cursor
         QApplication.setOverrideCursor(Qt.ArrowCursor)
 
     def reset_all(self):
-        print("[reset_all] Reset globale in corso...")
+        print("[reset_all] Global reset in progress...")
 
-        # Cancella immagine visualizzata
+        # Clear the displayed image
         self.image.clear()
         self.pixmap = None
         self.scaled_pixmap = None
         self.view_rect = QRect()
 
-        # Azzeramento selezione, zoom, drag
+        # Reset selection, zoom, and drag
         self.start_point = None
         self.end_point = None
         self.drag_start_pos = None
@@ -751,32 +751,32 @@ class ImageViewer(QMainWindow):
 
         self.angle_deg = 0
 
-        #  Scrollbar: reset posizione
+        # Scrollbar: reset position
         self.scroll_area.horizontalScrollBar().setValue(0)
         self.scroll_area.verticalScrollBar().setValue(0)
 
-        #  Reset ComboBox
+        # Reset ComboBox
         self.landmark_combo.setCurrentIndex(0)
         self.scaling_mode.setCurrentIndex(1)
 
-        #  Pulsanti e stati
+        # Buttons and states
         self.selection_mode = False
         self.activate_selector_button.setChecked(False)
 
-        #  Layer: cancella tutto
+        # Layers: clear everything
         if self.layer_manager:
-            self.layer_manager.clear_all_layers()  # devi implementare clear_all_layers nel layer_manager
+            self.layer_manager.clear_all_layers()  # clear_all_layers must be implemented in layer_manager
 
-        #  Landmarks: azzera struttura
+        # Landmarks: reset the structure
         self.init_landmarks(self.landmark_names)
 
-        #  Disattiva plugin
+        # Deactivate plugins
         self.disattiva_tutti_i_plugin()
 
-        #  Aggiorna display
+        # Update the display
         self.layer_manager.update_display()
 
-        print("[reset_all] Completato")
+        print("[reset_all] Completed")
 
 
 def run():
