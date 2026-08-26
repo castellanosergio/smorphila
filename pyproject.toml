@@ -1,7 +1,7 @@
 [project]
-name = "Morfometria"
+name = "morfometria"
 version = "0.0.4"
-description = "Morfometria"
+description = "morfometria"
 authors = [{ name="Sergio Castellano", email="sergio.castellano@unito.it" }, { name="Olivier Friard", email="olivier.friard@unito.it" }]
 readme = "README.md"
 requires-python = ">=3.12"
