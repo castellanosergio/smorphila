@@ -1,3 +1,3 @@
-from morfometria import main
+from smorphila import main
 
 main.run()
