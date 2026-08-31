@@ -310,9 +310,7 @@ class ImageViewer(QMainWindow):
         grid.addWidget(self.save_data_button, 8, 9, 1, 1)
 
         self.central_widget.setLayout(grid)
-        self.setWindowTitle(
-            f"Morphometric analysis - v. {__version__} {__version_date__}"
-        )
+        self.setWindowTitle(f"SMORPHILA - v. {__version__} {__version_date__}")
         self.resize(1000, 700)
 
         self.menu_bar = QMenuBar(self)
@@ -568,13 +566,13 @@ class ImageViewer(QMainWindow):
 
         self.scale_label.setText("")
 
-    def init_landmarks(self, nomi):
+    def init_landmarks(self, names):
         """
         Initialize the landmark structure from a list of names.
         Each landmark has: coordinates=[], color=None
         """
 
-        self.landmarks = {nome: {"coordinates": [], "color": None} for nome in nomi}
+        self.landmarks = {name: {"coordinates": [], "color": None} for name in names}
         return self.landmarks
 
     def rotate_image_dialog(self):
