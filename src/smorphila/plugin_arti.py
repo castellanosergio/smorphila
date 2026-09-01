@@ -68,14 +68,35 @@ class ArtiPlugin:
             punti.append(dati["coordinates"])  # un tuple (x, y)
         return punti
 
-    def ricalcola_spezzata_orientata(self, landmark_names: list[str], punti: list[tuple], angoli: list[float]) -> list[tuple]:
+    def ricalcola_spezzata_orientata(
+        self,
+        landmark_names: list[str],
+        punti: list[tuple],
+        angoli: list[float | str],
+    ) -> list[tuple]:
         if len(punti) < 2 or len(punti) != len(angoli):
-            raise ValueError("You need n points and n-1 angles between the segments")
-        # print(punti)
-        distanze = [math.hypot(punti[i + 1][0] - punti[i][0], punti[i + 1][1] - punti[i][1]) for i in range(len(punti) - 1)]
+            raise ValueError("You need n points and n angle entries")
+        distanze = [
+            math.hypot(
+                punti[i + 1][0] - punti[i][0],
+                punti[i + 1][1] - punti[i][1],
+            )
+            for i in range(len(punti) - 1)
+        ]
+        original_orientations = [
+            math.degrees(
+                math.atan2(
+                    punti[i + 1][1] - punti[i][1],
+                    punti[i + 1][0] - punti[i][0],
+                )
+            )
+            for i in range(len(punti) - 1)
+        ]
 
         nuova_spezzata = [punti[0]]
-        angolo_attuale = angoli[0]
+        angolo_attuale = self._resolve_first_angle(
+            angoli[0], original_orientations[0]
+        )
 
         for i in range(len(distanze)):
             dx = distanze[i] * math.cos(math.radians(angolo_attuale))
@@ -85,6 +106,37 @@ class ArtiPlugin:
             nuova_spezzata.append(nuovo_punto)
             self.viewer.landmarks[landmark_names[i + 1]]["coordinates"] = nuovo_punto
 
-            angolo_attuale += angoli[i + 1]
+            if i + 1 < len(distanze):
+                angolo_attuale += self._resolve_turn(
+                    angoli[i + 1],
+                    original_orientations[i],
+                    original_orientations[i + 1],
+                )
 
         return nuova_spezzata
+
+    @staticmethod
+    def _is_free_angle(angle: float | str) -> bool:
+        if isinstance(angle, str):
+            if angle.lower() == "free":
+                return True
+            raise ValueError(f"Unknown angle constraint: {angle}")
+        return False
+
+    def _resolve_first_angle(
+        self, angle: float | str, original_orientation: float
+    ) -> float:
+        if self._is_free_angle(angle):
+            return original_orientation
+        return float(angle)
+
+    def _resolve_turn(
+        self,
+        angle: float | str,
+        previous_orientation: float,
+        current_orientation: float,
+    ) -> float:
+        if not self._is_free_angle(angle):
+            return float(angle)
+        turn = current_orientation - previous_orientation
+        return (turn + 180) % 360 - 180

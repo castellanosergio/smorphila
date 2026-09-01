@@ -1,4 +1,4 @@
-"""Standalone editor for landmark, angle, and skeleton definitions."""
+"""Standalone editor for landmark, angle, and group definitions."""
 
 from __future__ import annotations
 
@@ -6,6 +6,7 @@ import json
 import math
 import pathlib as pl
 import sys
+import tomllib
 from dataclasses import dataclass, field
 
 from PySide6.QtCore import QPointF, QRectF, Qt, Signal
@@ -20,6 +21,9 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import (
     QApplication,
+    QComboBox,
+    QDialog,
+    QDialogButtonBox,
     QFileDialog,
     QFormLayout,
     QGroupBox,
@@ -53,49 +57,25 @@ class Landmark:
 
 
 @dataclass
-class SkeletonDefinition:
+class GroupDefinition:
     """An ordered group of landmarks with optional segment orientations."""
 
     name: str
     landmarks: list[str]
-    angles: list[float] = field(default_factory=list)
+    angles: list[float | None] = field(default_factory=list)
 
 
-def _normalize_angle(angle: float) -> float:
-    """Normalize an angle to (-180, 180], preserving left as 180 degrees."""
+def angle_choices(step: int) -> list[int]:
+    """Return all values displayed by the angle wheel."""
 
-    normalized = (angle + 180) % 360 - 180
-    return 180.0 if math.isclose(normalized, -180.0) else normalized
-
-
-def segment_orientation(start: QPointF, end: QPointF) -> float:
-    """Return the oriented segment angle in Qt image coordinates."""
-
-    dx = end.x() - start.x()
-    dy = end.y() - start.y()
-    if dx == 0 and dy == 0:
-        raise ValueError("Oriented segments must have different endpoints")
-    return _normalize_angle(math.degrees(math.atan2(dy, dx)))
-
-
-def calculate_oriented_angles(points: list[QPointF]) -> list[float]:
-    """Build the angle list consumed by ArtiPlugin from ordered points."""
-
-    if len(points) < 2:
-        raise ValueError("At least two points are required")
-    orientations = [
-        segment_orientation(start, end) for start, end in zip(points, points[1:])
-    ]
-    turns = [
-        _normalize_angle(current - previous)
-        for previous, current in zip(orientations, orientations[1:])
-    ]
-    return [orientations[0], *turns, 0.0]
+    if step not in {10, 20}:
+        raise ValueError("Angle step must be 10 or 20 degrees")
+    return list(range(-180, 181, step))
 
 
 def validate_definitions(
     landmarks: dict[str, Landmark],
-    skeletons: dict[str, SkeletonDefinition],
+    groups: dict[str, GroupDefinition],
 ) -> list[str]:
     """Return all errors that would make the configuration invalid."""
 
@@ -107,30 +87,27 @@ def validate_definitions(
         if not landmark.is_placed:
             errors.append(f"Landmark '{landmark.name}' has not been placed.")
 
-    for skeleton in skeletons.values():
-        if len(skeleton.landmarks) < 2:
+    for group in groups.values():
+        if len(group.landmarks) < 2:
             errors.append(
-                f"Skeleton '{skeleton.name}' must contain at least two landmarks."
+                f"Group '{group.name}' must contain at least two landmarks."
             )
-        if len(set(skeleton.landmarks)) != len(skeleton.landmarks):
-            errors.append(f"Skeleton '{skeleton.name}' contains duplicate landmarks.")
-        skeleton_points = []
-        for name in skeleton.landmarks:
+        if len(set(group.landmarks)) != len(group.landmarks):
+            errors.append(f"Group '{group.name}' contains duplicate landmarks.")
+        for name in group.landmarks:
             if name not in landmarks:
                 errors.append(
-                    f"Skeleton '{skeleton.name}' references unknown landmark '{name}'."
+                    f"Group '{group.name}' references unknown landmark '{name}'."
                 )
-            elif landmarks[name].is_placed:
-                skeleton_points.append(QPointF(landmarks[name].x, landmarks[name].y))
-        if skeleton.angles and len(skeleton.angles) != len(skeleton.landmarks):
+        if group.angles and len(group.angles) != len(group.landmarks) - 1:
             errors.append(
-                f"Skeleton '{skeleton.name}' must have one angle per landmark."
+                f"Group '{group.name}' must have one angle per segment."
             )
-        if skeleton.angles and len(skeleton_points) == len(skeleton.landmarks):
-            try:
-                calculate_oriented_angles(skeleton_points)
-            except ValueError as error:
-                errors.append(f"Skeleton '{skeleton.name}' is invalid: {error}.")
+        for angle in group.angles:
+            if angle is not None and (angle < -180 or angle > 180):
+                errors.append(
+                    f"Group '{group.name}' contains an angle outside -180..180."
+                )
 
     return errors
 
@@ -145,14 +122,21 @@ def _toml_array(values: list[str]) -> str:
     return "[" + ", ".join(_toml_string(value) for value in values) + "]"
 
 
-def _toml_number_array(values: list[float]) -> str:
-    return "[" + ", ".join(f"{value:.10g}" for value in values) + "]"
+def _toml_angle_array(values: list[float | None]) -> str:
+    if not values or all(value is None for value in values):
+        return "[]"
+    serialized = [
+        _toml_string("free") if value is None else f"{value:.10g}"
+        for value in values
+    ]
+    serialized.append("0")
+    return "[" + ", ".join(serialized) + "]"
 
 
 def serialize_toml(
     image_path: pl.Path,
     landmarks: dict[str, Landmark],
-    skeletons: dict[str, SkeletonDefinition],
+    groups: dict[str, GroupDefinition],
 ) -> str:
     """Serialize editor data without requiring an additional TOML package."""
 
@@ -170,17 +154,382 @@ def serialize_toml(
             ]
         )
 
-    for skeleton in skeletons.values():
+    for group in groups.values():
         lines.extend(
             [
                 "",
-                f"[landmarks_groups.{_toml_string(skeleton.name)}]",
-                f"landmarks = {_toml_array(skeleton.landmarks)}",
-                f"angles = {_toml_number_array(skeleton.angles)}",
+                f"[landmarks_groups.{_toml_string(group.name)}]",
+                f"landmarks = {_toml_array(group.landmarks)}",
+                f"angles = {_toml_angle_array(group.angles)}",
             ]
         )
 
     return "\n".join(lines) + "\n"
+
+
+def _number(value, description: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"{description} must be a number")
+    number = float(value)
+    if not math.isfinite(number):
+        raise ValueError(f"{description} must be finite")
+    return number
+
+
+def _deserialize_angles(
+    values, group_name: str, segment_count: int
+) -> list[float | None]:
+    if not isinstance(values, list):
+        raise ValueError(f"Angles for group '{group_name}' must be an array")
+    if not values:
+        return []
+    if len(values) == segment_count + 1:
+        values = values[:-1]
+    elif len(values) != segment_count:
+        raise ValueError(
+            f"Group '{group_name}' must have one angle per segment, "
+            "plus the optional trailing value"
+        )
+
+    angles = []
+    for value in values:
+        if isinstance(value, str):
+            if value.lower() != "free":
+                raise ValueError(
+                    f"Unknown angle constraint '{value}' in group '{group_name}'"
+                )
+            angles.append(None)
+            continue
+        angle = _number(value, f"Angle in group '{group_name}'")
+        if angle < -180 or angle > 180:
+            raise ValueError(
+                f"Angle in group '{group_name}' is outside -180..180"
+            )
+        angles.append(angle)
+    return [] if all(angle is None for angle in angles) else angles
+
+
+def deserialize_toml(
+    content: str,
+) -> tuple[dict[str, Landmark], dict[str, GroupDefinition], list[str]]:
+    """Parse a saved editor configuration without changing the GUI state."""
+
+    try:
+        data = tomllib.loads(content)
+    except tomllib.TOMLDecodeError as error:
+        raise ValueError(f"Invalid TOML: {error}") from error
+
+    positions = data.get("landmark_positions", {})
+    if not isinstance(positions, dict):
+        raise ValueError("landmark_positions must be a table")
+    names = data.get("landmark_names", list(positions))
+    if not isinstance(names, list) or not all(isinstance(name, str) for name in names):
+        raise ValueError("landmark_names must be an array of strings")
+    if len(set(names)) != len(names):
+        raise ValueError("landmark_names contains duplicate names")
+
+    ordered_names = names + [name for name in positions if name not in names]
+    landmarks = {}
+    for name in ordered_names:
+        position = positions.get(name)
+        if position is None:
+            landmarks[name] = Landmark(name)
+            continue
+        if not isinstance(position, dict):
+            raise ValueError(f"Position for landmark '{name}' must be a table")
+        coordinates = position.get("coordinates")
+        if not isinstance(coordinates, list) or len(coordinates) != 2:
+            raise ValueError(
+                f"Coordinates for landmark '{name}' must contain two numbers"
+            )
+        x = _number(coordinates[0], f"X coordinate for landmark '{name}'")
+        y = _number(coordinates[1], f"Y coordinate for landmark '{name}'")
+        landmarks[name] = Landmark(name, x, y)
+
+    groups_data = data.get("landmarks_groups", {})
+    if not isinstance(groups_data, dict):
+        raise ValueError("landmarks_groups must be a table")
+    groups = {}
+    for name, group_data in groups_data.items():
+        if not isinstance(group_data, dict):
+            raise ValueError(f"Group '{name}' must be a table")
+        group_landmarks = group_data.get("landmarks")
+        if not isinstance(group_landmarks, list) or not all(
+            isinstance(item, str) for item in group_landmarks
+        ):
+            raise ValueError(f"Landmarks for group '{name}' must be strings")
+        if len(group_landmarks) < 2:
+            raise ValueError(f"Group '{name}' must contain at least two landmarks")
+        if len(set(group_landmarks)) != len(group_landmarks):
+            raise ValueError(f"Group '{name}' contains duplicate landmarks")
+        unknown = [item for item in group_landmarks if item not in landmarks]
+        if unknown:
+            raise ValueError(
+                f"Group '{name}' references unknown landmarks: {', '.join(unknown)}"
+            )
+        angles = _deserialize_angles(
+            group_data.get("angles", []), name, len(group_landmarks) - 1
+        )
+        groups[name] = GroupDefinition(name, group_landmarks, angles)
+
+    warnings = []
+    if "angles" in data:
+        warnings.append(
+            "Legacy vertex-first angle tables were ignored because they cannot be "
+            "converted to oriented segment constraints."
+        )
+    return landmarks, groups, warnings
+
+
+class AngleWheel(QWidget):
+    """Circular selector with discrete angles between -180 and 180 degrees."""
+
+    angle_selected = Signal(int)
+
+    def __init__(self, step: int, selected_angle: float | None = None):
+        super().__init__()
+        self.step = step
+        self.selected_angle = selected_angle
+        self.hover_angle: int | None = None
+        self.setMinimumSize(620, 620)
+        self.setMouseTracking(True)
+
+    @property
+    def available_angles(self) -> list[int]:
+        return angle_choices(self.step)
+
+    def _angle_at(self, position: QPointF) -> int | None:
+        center = QPointF(self.width() / 2, self.height() / 2)
+        dx = position.x() - center.x()
+        dy = position.y() - center.y()
+        distance = math.hypot(dx, dy)
+        if distance < 20 or distance > min(self.width(), self.height()) / 2:
+            return None
+        raw_angle = math.degrees(math.atan2(dy, dx))
+        snapped = round(raw_angle / self.step) * self.step
+        return max(-180, min(180, snapped))
+
+    def mouseMoveEvent(self, event: QMouseEvent):
+        self.hover_angle = self._angle_at(event.position())
+        self.update()
+
+    def leaveEvent(self, event):
+        self.hover_angle = None
+        self.update()
+
+    def mousePressEvent(self, event: QMouseEvent):
+        if event.button() != Qt.LeftButton:
+            return
+        angle = self._angle_at(event.position())
+        if angle is None:
+            return
+        self.selected_angle = angle
+        self.angle_selected.emit(angle)
+        self.update()
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        center = QPointF(self.width() / 2, self.height() / 2)
+        radius = min(self.width(), self.height()) / 2 - 52
+        painter.fillRect(self.rect(), QColor("#252525"))
+        painter.setPen(QPen(QColor("#888888"), 1))
+        painter.drawEllipse(center, radius, radius)
+
+        for angle in self.available_angles:
+            if angle == 180:
+                continue
+            radians = math.radians(angle)
+            endpoint = QPointF(
+                center.x() + radius * math.cos(radians),
+                center.y() + radius * math.sin(radians),
+            )
+            is_shared_axis = angle == -180
+            is_selected = self.selected_angle == angle or (
+                is_shared_axis and self.selected_angle == 180
+            )
+            is_hovered = self.hover_angle == angle or (
+                is_shared_axis and self.hover_angle == 180
+            )
+            color = QColor("#ffd23f") if is_selected else QColor("#62bfff")
+            width = 4 if is_selected else 2 if is_hovered else 1
+            painter.setPen(QPen(color, width))
+            painter.drawLine(center, endpoint)
+
+            label_radius = radius + 26
+            label_point = QPointF(
+                center.x() + label_radius * math.cos(radians),
+                center.y() + label_radius * math.sin(radians),
+            )
+            label = "-180° / 180°" if angle == -180 else f"{angle}°"
+            painter.setPen(QPen(QColor("#eeeeee"), 1))
+            painter.drawText(
+                QRectF(label_point.x() - 28, label_point.y() - 9, 56, 18),
+                Qt.AlignCenter,
+                label,
+            )
+
+        painter.setBrush(QColor("#eeeeee"))
+        painter.setPen(Qt.NoPen)
+        painter.drawEllipse(center, 4, 4)
+
+
+class RelativeAngleDiagram(AngleWheel):
+    """Joint diagram for selecting a turn relative to an incoming segment."""
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        center = QPointF(self.width() / 2, self.height() / 2)
+        radius = min(self.width(), self.height()) / 2 - 58
+        painter.fillRect(self.rect(), QColor("#252525"))
+
+        painter.setPen(QPen(QColor("#aaaaaa"), 5))
+        incoming_start = QPointF(center.x() - radius, center.y())
+        painter.drawLine(incoming_start, center)
+        self._draw_incoming_arrow(painter, center)
+        painter.setPen(QPen(QColor("#aaaaaa"), 1, Qt.DashLine))
+        painter.drawLine(center, QPointF(center.x() + radius, center.y()))
+
+        for angle in self.available_angles:
+            if angle == 180:
+                continue
+            radians = math.radians(angle)
+            endpoint = QPointF(
+                center.x() + radius * math.cos(radians),
+                center.y() + radius * math.sin(radians),
+            )
+            is_shared_axis = angle == -180
+            is_selected = self.selected_angle == angle or (
+                is_shared_axis and self.selected_angle == 180
+            )
+            is_hovered = self.hover_angle == angle or (
+                is_shared_axis and self.hover_angle == 180
+            )
+            if is_selected:
+                color = QColor("#ffd23f")
+            elif angle < 0:
+                color = QColor("#68b9ff")
+            elif angle > 0:
+                color = QColor("#ff8b68")
+            else:
+                color = QColor("#70d890")
+            width = 5 if is_selected else 3 if is_hovered else 1
+            painter.setPen(QPen(color, width))
+            painter.drawLine(center, endpoint)
+
+            label_radius = radius + 28
+            label_point = QPointF(
+                center.x() + label_radius * math.cos(radians),
+                center.y() + label_radius * math.sin(radians),
+            )
+            if angle == -180:
+                label = "U-turn ±180°"
+            elif angle == 0:
+                label = "0° straight"
+            else:
+                label = f"{angle:+d}°"
+            painter.setPen(QPen(QColor("#eeeeee"), 1))
+            painter.drawText(
+                QRectF(label_point.x() - 38, label_point.y() - 9, 76, 18),
+                Qt.AlignCenter,
+                label,
+            )
+
+        painter.setBrush(QColor("#eeeeee"))
+        painter.setPen(Qt.NoPen)
+        painter.drawEllipse(center, 5, 5)
+        painter.setPen(QPen(QColor("#68b9ff"), 1))
+        painter.drawText(
+            QRectF(0, 5, self.width(), 24),
+            Qt.AlignCenter,
+            "Negative turn: counterclockwise",
+        )
+        painter.setPen(QPen(QColor("#ff8b68"), 1))
+        painter.drawText(
+            QRectF(0, self.height() - 29, self.width(), 24),
+            Qt.AlignCenter,
+            "Positive turn: clockwise",
+        )
+        painter.setPen(QPen(QColor("#dddddd"), 1))
+        painter.drawText(
+            QRectF(incoming_start.x() - 10, center.y() - 28, radius, 20),
+            Qt.AlignCenter,
+            "Incoming segment",
+        )
+
+    @staticmethod
+    def _draw_incoming_arrow(painter: QPainter, vertex: QPointF):
+        painter.drawLine(vertex, vertex + QPointF(-14, -9))
+        painter.drawLine(vertex, vertex + QPointF(-14, 9))
+
+
+class AngleSelectionDialog(QDialog):
+    """Dialog for imposing or clearing one segment angle."""
+
+    def __init__(
+        self,
+        segment_name: str,
+        step: int,
+        selected_angle: float | None,
+        relative: bool,
+        parent: QWidget | None = None,
+    ):
+        super().__init__(parent)
+        self.selected_angle = selected_angle
+        self.relative = relative
+        angle_kind = "relative turn" if relative else "absolute angle"
+        self.setWindowTitle(f"Set {angle_kind}: {segment_name}")
+        layout = QVBoxLayout(self)
+        instruction_text = (
+            "The gray arrow is the incoming segment. Click an outgoing ray to "
+            "set its relative turn, where 0° continues straight."
+            if relative
+            else "Click a compass ray to set the absolute segment orientation."
+        )
+        instruction = QLabel(instruction_text)
+        instruction.setWordWrap(True)
+        layout.addWidget(instruction)
+
+        selector_class = RelativeAngleDiagram if relative else AngleWheel
+        self.selector = selector_class(step, selected_angle)
+        self.selector.angle_selected.connect(self._select_angle)
+        layout.addWidget(self.selector)
+
+        self.selection_label = QLabel()
+        layout.addWidget(self.selection_label)
+        clear_button = QPushButton("No constraint")
+        clear_button.clicked.connect(self._clear_angle)
+        layout.addWidget(clear_button)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+        self._update_selection_label()
+
+    def _select_angle(self, angle: int):
+        self.selected_angle = float(angle)
+        self._update_selection_label()
+
+    def _clear_angle(self):
+        self.selected_angle = None
+        self.selector.selected_angle = None
+        self.selector.update()
+        self._update_selection_label()
+
+    def _update_selection_label(self):
+        text = (
+            "No constraint"
+            if self.selected_angle is None
+            else (
+                f"Selected relative turn: {self.selected_angle:g}°"
+                if self.relative
+                else f"Selected absolute angle: {self.selected_angle:g}°"
+            )
+        )
+        self.selection_label.setText(text)
 
 
 class ImageCanvas(QWidget):
@@ -192,7 +541,7 @@ class ImageCanvas(QWidget):
         super().__init__(parent)
         self.pixmap = QPixmap()
         self.landmarks: dict[str, Landmark] = {}
-        self.skeletons: dict[str, SkeletonDefinition] = {}
+        self.groups: dict[str, GroupDefinition] = {}
         self.selected_landmark = ""
         self.setMinimumSize(500, 400)
         self.setCursor(Qt.CrossCursor)
@@ -272,7 +621,7 @@ class ImageCanvas(QWidget):
         painter.setRenderHint(QPainter.Antialiasing)
         target = self.image_rect()
         painter.drawPixmap(target, self.pixmap, QRectF(self.pixmap.rect()))
-        self._draw_skeletons(painter)
+        self._draw_groups(painter)
         self._draw_landmarks(painter)
 
     def _landmark_point(self, name: str) -> QPointF | None:
@@ -281,15 +630,27 @@ class ImageCanvas(QWidget):
             return None
         return self.image_to_widget(QPointF(landmark.x, landmark.y))
 
-    def _draw_skeletons(self, painter: QPainter):
+    def _draw_groups(self, painter: QPainter):
         painter.setPen(QPen(QColor(60, 180, 255, 200), 3))
-        for skeleton in self.skeletons.values():
-            points = [self._landmark_point(name) for name in skeleton.landmarks]
-            for first, second in zip(points, points[1:]):
+        for group in self.groups.values():
+            points = [self._landmark_point(name) for name in group.landmarks]
+            for index, (first, second) in enumerate(zip(points, points[1:])):
                 if first is not None and second is not None:
                     painter.drawLine(first, second)
-                    if skeleton.angles:
+                    angle = (
+                        group.angles[index]
+                        if index < len(group.angles)
+                        else None
+                    )
+                    if angle is not None:
                         self._draw_arrow_head(painter, first, second)
+                        midpoint = (first + second) / 2
+                        painter.setPen(QPen(QColor(255, 210, 50), 1))
+                        suffix = "absolute" if index == 0 else "turn"
+                        painter.drawText(
+                            midpoint + QPointF(6, -6), f"{angle:g}° {suffix}"
+                        )
+                        painter.setPen(QPen(QColor(60, 180, 255, 200), 3))
 
     def _draw_arrow_head(self, painter: QPainter, start: QPointF, end: QPointF):
         direction = math.atan2(end.y() - start.y(), end.x() - start.x())
@@ -326,7 +687,7 @@ class LandmarkEditor(QMainWindow):
         self.image_path: pl.Path | None = None
         self.output_path: pl.Path | None = None
         self.landmarks: dict[str, Landmark] = {}
-        self.skeletons: dict[str, SkeletonDefinition] = {}
+        self.groups: dict[str, GroupDefinition] = {}
         self.mode = "idle"
         self.pending_name = ""
         self.pending_landmarks: list[str] = []
@@ -341,14 +702,14 @@ class LandmarkEditor(QMainWindow):
     def _build_interface(self):
         self.canvas = ImageCanvas()
         self.canvas.landmarks = self.landmarks
-        self.canvas.skeletons = self.skeletons
+        self.canvas.groups = self.groups
         self.canvas.image_clicked.connect(self._handle_canvas_click)
 
         editor_panel = QWidget()
         editor_layout = QVBoxLayout(editor_panel)
         editor_layout.addWidget(self._build_landmark_group())
         editor_layout.addWidget(self._build_angle_group())
-        editor_layout.addWidget(self._build_skeleton_group())
+        editor_layout.addWidget(self._build_group_section())
         editor_layout.addStretch()
         editor_panel.setMinimumWidth(340)
 
@@ -398,48 +759,55 @@ class LandmarkEditor(QMainWindow):
         group = QGroupBox("Oriented segments")
         layout = QVBoxLayout(group)
         description = QLabel(
-            "Select a skeleton, then calculate its segment orientations."
+            "Select a group and impose an angle on any segment, if needed."
         )
         description.setWordWrap(True)
         layout.addWidget(description)
+        step_layout = QHBoxLayout()
+        step_layout.addWidget(QLabel("Angle step:"))
+        self.angle_step_combo = QComboBox()
+        self.angle_step_combo.addItems(["10°", "20°"])
+        step_layout.addWidget(self.angle_step_combo)
+        layout.addLayout(step_layout)
         buttons = QHBoxLayout()
-        self.define_angles_button = QPushButton("Calculate angles")
-        self.clear_angles_button = QPushButton("Clear angles")
-        buttons.addWidget(self.define_angles_button)
-        buttons.addWidget(self.clear_angles_button)
+        self.set_angle_button = QPushButton("Set angle...")
+        self.clear_angle_button = QPushButton("No constraint")
+        buttons.addWidget(self.set_angle_button)
+        buttons.addWidget(self.clear_angle_button)
         layout.addLayout(buttons)
-        self.angle_list = QListWidget()
-        self.angle_list.setMinimumHeight(100)
-        layout.addWidget(self.angle_list)
-        self.define_angles_button.clicked.connect(self._calculate_selected_angles)
-        self.clear_angles_button.clicked.connect(self._clear_selected_angles)
-        self.angle_list.currentRowChanged.connect(self._select_angle_skeleton)
+        self.segment_list = QListWidget()
+        self.segment_list.setMinimumHeight(100)
+        layout.addWidget(self.segment_list)
+        self.set_angle_button.clicked.connect(self._edit_selected_segment_angle)
+        self.clear_angle_button.clicked.connect(self._clear_selected_segment_angle)
+        self.segment_list.itemDoubleClicked.connect(self._edit_selected_segment_angle)
         return group
 
-    def _build_skeleton_group(self) -> QGroupBox:
-        group = QGroupBox("Skeletons")
+    def _build_group_section(self) -> QGroupBox:
+        group = QGroupBox("Groups")
         layout = QVBoxLayout(group)
-        self.skeleton_name_edit = QLineEdit()
-        self.skeleton_name_edit.setPlaceholderText("Unique skeleton name")
-        layout.addWidget(self.skeleton_name_edit)
+        self.group_name_edit = QLineEdit()
+        self.group_name_edit.setPlaceholderText("Unique group name")
+        layout.addWidget(self.group_name_edit)
         buttons = QHBoxLayout()
-        self.define_skeleton_button = QPushButton("Define skeleton")
-        self.finish_skeleton_button = QPushButton("Finish")
-        self.finish_skeleton_button.setEnabled(False)
-        self.cancel_skeleton_button = QPushButton("Cancel")
-        self.delete_skeleton_button = QPushButton("Delete selected")
-        buttons.addWidget(self.define_skeleton_button)
-        buttons.addWidget(self.finish_skeleton_button)
-        buttons.addWidget(self.cancel_skeleton_button)
-        buttons.addWidget(self.delete_skeleton_button)
+        self.define_group_button = QPushButton("Define group")
+        self.finish_group_button = QPushButton("Finish")
+        self.finish_group_button.setEnabled(False)
+        self.cancel_group_button = QPushButton("Cancel")
+        self.delete_group_button = QPushButton("Delete selected")
+        buttons.addWidget(self.define_group_button)
+        buttons.addWidget(self.finish_group_button)
+        buttons.addWidget(self.cancel_group_button)
+        buttons.addWidget(self.delete_group_button)
         layout.addLayout(buttons)
-        self.skeleton_list = QListWidget()
-        self.skeleton_list.setMinimumHeight(100)
-        layout.addWidget(self.skeleton_list)
-        self.define_skeleton_button.clicked.connect(self._start_skeleton)
-        self.finish_skeleton_button.clicked.connect(self._finish_skeleton)
-        self.cancel_skeleton_button.clicked.connect(self._cancel_definition)
-        self.delete_skeleton_button.clicked.connect(self._delete_skeleton)
+        self.group_list = QListWidget()
+        self.group_list.setMinimumHeight(100)
+        layout.addWidget(self.group_list)
+        self.group_list.currentRowChanged.connect(self._refresh_segments)
+        self.define_group_button.clicked.connect(self._start_group)
+        self.finish_group_button.clicked.connect(self._finish_group)
+        self.cancel_group_button.clicked.connect(self._cancel_definition)
+        self.delete_group_button.clicked.connect(self._delete_group)
         return group
 
     def _build_menu(self):
@@ -467,14 +835,15 @@ class LandmarkEditor(QMainWindow):
             self.rename_landmark_button,
             self.delete_landmark_button,
             self.landmark_list,
-            self.define_angles_button,
-            self.clear_angles_button,
-            self.angle_list,
-            self.skeleton_name_edit,
-            self.define_skeleton_button,
-            self.cancel_skeleton_button,
-            self.delete_skeleton_button,
-            self.skeleton_list,
+            self.angle_step_combo,
+            self.set_angle_button,
+            self.clear_angle_button,
+            self.segment_list,
+            self.group_name_edit,
+            self.define_group_button,
+            self.cancel_group_button,
+            self.delete_group_button,
+            self.group_list,
         ):
             widget.setEnabled(enabled)
         self.save_action.setEnabled(enabled)
@@ -506,16 +875,34 @@ class LandmarkEditor(QMainWindow):
 
         self.image_path = image_path
         self.output_path = None
-        self.landmarks.clear()
-        self.skeletons.clear()
+        self.landmarks = {}
+        self.groups = {}
         self.mode = "idle"
         self.pending_landmarks.clear()
-        self.finish_skeleton_button.setEnabled(False)
+        self.finish_group_button.setEnabled(False)
+        status_message = "Image loaded. Add a landmark to begin."
+        configuration_path = image_path.with_suffix(".toml")
+        if configuration_path.is_file():
+            try:
+                content = configuration_path.read_text(encoding="utf-8")
+                self.landmarks, self.groups, warnings = deserialize_toml(content)
+            except (OSError, ValueError) as error:
+                QMessageBox.critical(
+                    self,
+                    "Load TOML",
+                    f"Could not load {configuration_path.name}:\n{error}",
+                )
+            else:
+                self.output_path = configuration_path
+                status_message = f"Loaded configuration from {configuration_path.name}"
+                if warnings:
+                    QMessageBox.warning(self, "Load TOML", "\n".join(warnings))
+        self._sync_canvas_data()
         self._refresh_lists()
         self._set_editor_enabled(True)
         self.dirty = False
         self.setWindowTitle(f"{image_path.name} - SMORPHILA Landmark Definition Editor")
-        self.status_bar.showMessage("Image loaded. Add a landmark to begin.")
+        self.status_bar.showMessage(status_message)
 
     def _clean_name(self, edit: QLineEdit, kind: str, collection: dict) -> str | None:
         name = edit.text().strip()
@@ -576,11 +963,10 @@ class LandmarkEditor(QMainWindow):
             else:
                 renamed_landmarks[name] = landmark
         self.landmarks = renamed_landmarks
-        for skeleton in self.skeletons.values():
-            skeleton.landmarks = [
-                new_name if name == old_name else name for name in skeleton.landmarks
+        for group in self.groups.values():
+            group.landmarks = [
+                new_name if name == old_name else name for name in group.landmarks
             ]
-        self._recalculate_skeleton_angles()
         self._sync_canvas_data()
         self.landmark_name_edit.clear()
         self._refresh_lists()
@@ -593,15 +979,13 @@ class LandmarkEditor(QMainWindow):
             QMessageBox.warning(self, "Landmark", "Select a landmark first.")
             return
         references = [
-            skeleton.name
-            for skeleton in self.skeletons.values()
-            if name in skeleton.landmarks
+            group.name for group in self.groups.values() if name in group.landmarks
         ]
         if references:
             QMessageBox.warning(
                 self,
                 "Landmark",
-                "Delete the following skeleton definitions first: "
+                "Delete the following group definitions first: "
                 + ", ".join(references),
             )
             return
@@ -620,93 +1004,118 @@ class LandmarkEditor(QMainWindow):
                 self.landmark_list.setCurrentRow(row)
                 return
 
-    def _calculate_selected_angles(self):
-        name = self._selected_skeleton_name()
-        if name is None:
+    def _selected_segment(self) -> tuple[GroupDefinition, int] | None:
+        group_name = self._selected_group_name()
+        row = self.segment_list.currentRow()
+        if group_name is None or row < 0:
             QMessageBox.warning(
-                self, "Oriented segments", "Select a skeleton first."
+                self, "Oriented segments", "Select a group segment first."
             )
+            return None
+        return self.groups[group_name], row
+
+    def _edit_selected_segment_angle(self, item=None):
+        selection = self._selected_segment()
+        if selection is None:
             return
-        skeleton = self.skeletons[name]
-        points = [
-            QPointF(self.landmarks[item].x, self.landmarks[item].y)
-            for item in skeleton.landmarks
-        ]
-        try:
-            skeleton.angles = calculate_oriented_angles(points)
-        except ValueError as error:
-            QMessageBox.warning(self, "Oriented segments", str(error))
+        group, index = selection
+        self._ensure_segment_angles(group)
+        start = group.landmarks[index]
+        end = group.landmarks[index + 1]
+        step = int(self.angle_step_combo.currentText().removesuffix("°"))
+        dialog = AngleSelectionDialog(
+            f"{start} → {end}",
+            step,
+            group.angles[index],
+            relative=index > 0,
+            parent=self,
+        )
+        if dialog.exec() != QDialog.Accepted:
             return
-        self._refresh_angles()
-        self._select_angle_by_name(name)
+        group.angles[index] = dialog.selected_angle
+        self._compact_free_angles(group)
+        self._refresh_segments()
+        self.segment_list.setCurrentRow(index)
         self.dirty = True
         self.canvas.update()
-        self.status_bar.showMessage(f"Angles calculated for skeleton '{name}'.")
 
-    def _clear_selected_angles(self):
-        name = self._selected_skeleton_name()
-        if name is None or name not in self.skeletons:
-            QMessageBox.warning(
-                self, "Oriented segments", "Select a skeleton first."
-            )
+    def _clear_selected_segment_angle(self):
+        selection = self._selected_segment()
+        if selection is None:
             return
-        self.skeletons[name].angles.clear()
-        self._refresh_angles()
+        group, index = selection
+        self._ensure_segment_angles(group)
+        group.angles[index] = None
+        self._compact_free_angles(group)
+        self._refresh_segments()
+        self.segment_list.setCurrentRow(index)
         self.dirty = True
         self.canvas.update()
-        self.status_bar.showMessage(f"Angles cleared for skeleton '{name}'.")
 
-    def _start_skeleton(self):
-        name = self._clean_name(self.skeleton_name_edit, "Skeleton", self.skeletons)
+    @staticmethod
+    def _ensure_segment_angles(group: GroupDefinition):
+        segment_count = len(group.landmarks) - 1
+        if not group.angles:
+            group.angles = [None] * segment_count
+
+    @staticmethod
+    def _compact_free_angles(group: GroupDefinition):
+        if group.angles and all(angle is None for angle in group.angles):
+            group.angles.clear()
+
+    def _start_group(self):
+        name = self._clean_name(self.group_name_edit, "Group", self.groups)
         if name is None:
             return
         if len([item for item in self.landmarks.values() if item.is_placed]) < 2:
-            QMessageBox.warning(self, "Skeleton", "Place at least two landmarks first.")
+            QMessageBox.warning(self, "Group", "Place at least two landmarks first.")
             return
-        self.mode = "skeleton"
+        self.mode = "group"
         self.pending_name = name
         self.pending_landmarks = []
-        self.finish_skeleton_button.setEnabled(True)
+        self.finish_group_button.setEnabled(True)
         self.status_bar.showMessage(
-            "Select skeleton landmarks in order, then click Finish."
+            "Select group landmarks in order, then click Finish."
         )
 
     def _cancel_definition(self):
-        if self.mode != "skeleton":
+        if self.mode != "group":
             return
         self.mode = "idle"
         self.pending_name = ""
         self.pending_landmarks.clear()
-        self.finish_skeleton_button.setEnabled(False)
+        self.finish_group_button.setEnabled(False)
         self.status_bar.showMessage("Definition cancelled.")
 
-    def _finish_skeleton(self):
-        if self.mode != "skeleton":
+    def _finish_group(self):
+        if self.mode != "group":
             return
         if len(self.pending_landmarks) < 2:
-            QMessageBox.warning(self, "Skeleton", "Select at least two landmarks.")
+            QMessageBox.warning(self, "Group", "Select at least two landmarks.")
             return
-        self.skeletons[self.pending_name] = SkeletonDefinition(
+        self.groups[self.pending_name] = GroupDefinition(
             self.pending_name, self.pending_landmarks.copy()
         )
-        self.skeleton_name_edit.clear()
+        self.group_name_edit.clear()
         self.mode = "idle"
         self.pending_landmarks.clear()
-        self.finish_skeleton_button.setEnabled(False)
-        self._refresh_skeletons()
+        self.finish_group_button.setEnabled(False)
+        self._refresh_groups()
+        self._select_group_by_name(self.pending_name)
+        self._refresh_segments()
         self.dirty = True
         self.canvas.update()
-        self.status_bar.showMessage("Skeleton created.")
+        self.status_bar.showMessage("Group created.")
 
-    def _delete_skeleton(self):
-        row = self.skeleton_list.currentRow()
+    def _delete_group(self):
+        row = self.group_list.currentRow()
         if row < 0:
-            QMessageBox.warning(self, "Skeleton", "Select a skeleton first.")
+            QMessageBox.warning(self, "Group", "Select a group first.")
             return
-        name = self.skeleton_list.item(row).data(Qt.UserRole)
-        del self.skeletons[name]
-        self._refresh_skeletons()
-        self._refresh_angles()
+        name = self.group_list.item(row).data(Qt.UserRole)
+        del self.groups[name]
+        self._refresh_groups()
+        self._refresh_segments()
         self.dirty = True
         self.canvas.update()
 
@@ -720,15 +1129,13 @@ class LandmarkEditor(QMainWindow):
             landmark.y = image_point.y()
             self.mode = "idle"
             self.dirty = True
-            self._recalculate_skeleton_angles()
             self._refresh_landmarks()
-            self._refresh_angles()
             self._select_landmark_by_name(name)
             self.status_bar.showMessage(f"Landmark '{name}' placed.")
             self.canvas.update()
             return
 
-        if self.mode != "skeleton":
+        if self.mode != "group":
             return
         widget_point = self.canvas.image_to_widget(image_point)
         name = self.canvas.closest_landmark(widget_point)
@@ -757,91 +1164,68 @@ class LandmarkEditor(QMainWindow):
             self._select_landmark_by_name(selected_name)
         self.canvas.update()
 
-    def _refresh_angles(self):
-        self.angle_list.clear()
-        for skeleton in self.skeletons.values():
-            if not skeleton.angles:
-                continue
-            segment_values = [
-                (
-                    f"{skeleton.landmarks[0]} → {skeleton.landmarks[1]}: "
-                    f"{skeleton.angles[0]:.2f}° absolute"
-                )
-            ]
-            for index in range(1, len(skeleton.landmarks) - 1):
-                segment_values.append(
-                    f"{skeleton.landmarks[index]} → "
-                    f"{skeleton.landmarks[index + 1]}: "
-                    f"{skeleton.angles[index]:+.2f}° turn"
-                )
-            item_text = f"{skeleton.name}: " + "; ".join(segment_values)
-            self.angle_list.addItem(item_text)
-            self.angle_list.item(self.angle_list.count() - 1).setData(
-                Qt.UserRole, skeleton.name
+    def _refresh_segments(self, row=None):
+        selected_row = self.segment_list.currentRow()
+        self.segment_list.clear()
+        group_name = self._selected_group_name()
+        if group_name is None:
+            return
+        group = self.groups[group_name]
+        for index, (start, end) in enumerate(
+            zip(group.landmarks, group.landmarks[1:])
+        ):
+            angle = group.angles[index] if index < len(group.angles) else None
+            if angle is None:
+                constraint = "free"
+            elif index == 0:
+                constraint = f"{angle:g}° absolute"
+            else:
+                constraint = f"{angle:+g}° turn"
+            self.segment_list.addItem(f"{start} → {end}: {constraint}")
+        if self.segment_list.count():
+            selected_row = max(
+                0, min(selected_row, self.segment_list.count() - 1)
             )
+            self.segment_list.setCurrentRow(selected_row)
 
-    def _recalculate_skeleton_angles(self):
-        for skeleton in self.skeletons.values():
-            if not skeleton.angles:
-                continue
-            points = [
-                QPointF(self.landmarks[name].x, self.landmarks[name].y)
-                for name in skeleton.landmarks
-            ]
-            try:
-                skeleton.angles = calculate_oriented_angles(points)
-            except ValueError:
-                skeleton.angles = [math.nan] * len(skeleton.landmarks)
-
-    def _selected_skeleton_name(self) -> str | None:
-        item = self.skeleton_list.currentItem()
+    def _selected_group_name(self) -> str | None:
+        item = self.group_list.currentItem()
         return item.data(Qt.UserRole) if item else None
 
-    def _select_angle_skeleton(self):
-        item = self.angle_list.currentItem()
-        if item:
-            self._select_skeleton_by_name(item.data(Qt.UserRole))
-
-    def _select_skeleton_by_name(self, name: str):
-        for row in range(self.skeleton_list.count()):
-            if self.skeleton_list.item(row).data(Qt.UserRole) == name:
-                self.skeleton_list.setCurrentRow(row)
+    def _select_group_by_name(self, name: str):
+        for row in range(self.group_list.count()):
+            if self.group_list.item(row).data(Qt.UserRole) == name:
+                self.group_list.setCurrentRow(row)
                 return
 
-    def _select_angle_by_name(self, name: str):
-        for row in range(self.angle_list.count()):
-            if self.angle_list.item(row).data(Qt.UserRole) == name:
-                self.angle_list.setCurrentRow(row)
-                return
-
-    def _refresh_skeletons(self):
-        selected_name = self._selected_skeleton_name()
-        self.skeleton_list.clear()
-        for skeleton in self.skeletons.values():
-            self.skeleton_list.addItem(
-                f"{skeleton.name}: {' - '.join(skeleton.landmarks)}"
+    def _refresh_groups(self):
+        selected_name = self._selected_group_name()
+        self.group_list.clear()
+        for group in self.groups.values():
+            self.group_list.addItem(
+                f"{group.name}: {' - '.join(group.landmarks)}"
             )
-            self.skeleton_list.item(self.skeleton_list.count() - 1).setData(
-                Qt.UserRole, skeleton.name
+            self.group_list.item(self.group_list.count() - 1).setData(
+                Qt.UserRole, group.name
             )
         if selected_name:
-            self._select_skeleton_by_name(selected_name)
+            self._select_group_by_name(selected_name)
 
     def _refresh_lists(self):
         self._refresh_landmarks()
-        self._refresh_angles()
-        self._refresh_skeletons()
+        self._refresh_groups()
+        self._refresh_segments()
         self.canvas.update()
 
     def _sync_canvas_data(self):
         self.canvas.landmarks = self.landmarks
-        self.canvas.skeletons = self.skeletons
+        self.canvas.groups = self.groups
 
     def save_toml(self):
         if self.image_path is None:
             QMessageBox.warning(self, "Save TOML", "Open an image first.")
             return
-        errors = validate_definitions(self.landmarks, self.skeletons)
+        errors = validate_definitions(self.landmarks, self.groups)
         if errors:
             QMessageBox.warning(self, "Save TOML", "\n".join(errors))
             return
@@ -861,7 +1245,7 @@ class LandmarkEditor(QMainWindow):
         try:
             output_path.write_text(
                 serialize_toml(
-                    self.image_path, self.landmarks, self.skeletons
+                    self.image_path, self.landmarks, self.groups
                 ),
                 encoding="utf-8",
             )
