@@ -8,7 +8,15 @@ import sys
 import tomllib
 
 from PySide6.QtCore import QEvent, QPoint, QPointF, QRect, Qt, QTimer
-from PySide6.QtGui import QAction, QCursor, QKeySequence, QPixmap, QShortcut, QTransform
+from PySide6.QtGui import (
+    QAction,
+    QCursor,
+    QKeySequence,
+    QPixmap,
+    QShortcut,
+    QTransform,
+    QWheelEvent,
+)
 from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
@@ -199,6 +207,17 @@ class ClickableLabel(QLabel):
             self.viewer.zoom_to_selection()
             return
 
+    def wheelEvent(self, event: QWheelEvent):
+        if self.viewer.pixmap is None or self.viewer.pixmap.isNull():
+            event.ignore()
+            return
+        delta = event.angleDelta().y()
+        if delta == 0:
+            event.ignore()
+            return
+        self.viewer.zoom_by(1.2 ** (delta / 120), event.position())
+        event.accept()
+
     def map_to_pixmap_coordinates(self, pos):
         pixmap = self.pixmap()
         if not pixmap:
@@ -237,6 +256,9 @@ class ImageViewer(QMainWindow):
         self.end_point = None
         self.drag_start_pos = None
         self.selecting = False
+        self.pixmap = None
+        self.scaled_pixmap = None
+        self.view_rect = QRect()
 
         # Initialize landmarks, semilandmarks, and scale
         self.scale = None
@@ -335,6 +357,19 @@ class ImageViewer(QMainWindow):
             lambda: self.layer_manager.toggle_visibility("landmarks")
         )
         view_menu.addAction(toggle_layer_action)
+
+        zoom_in_action = QAction("Zoom in", self)
+        zoom_out_action = QAction("Zoom out", self)
+        fit_image_action = QAction("Fit image", self)
+        zoom_in_action.setShortcut("Ctrl++")
+        zoom_out_action.setShortcut("Ctrl+-")
+        fit_image_action.setShortcut("Ctrl+0")
+        zoom_in_action.triggered.connect(lambda: self.zoom_by(1.2))
+        zoom_out_action.triggered.connect(lambda: self.zoom_by(1 / 1.2))
+        fit_image_action.triggered.connect(self.reset_view_rect)
+        view_menu.addAction(zoom_in_action)
+        view_menu.addAction(zoom_out_action)
+        view_menu.addAction(fit_image_action)
 
         # Plugins: layer manager and tools
         self.layer_manager = LayerManager(self)
@@ -535,8 +570,6 @@ class ImageViewer(QMainWindow):
             ordered_names,
             landmarks,
             groups,
-            data.get("image_rotation", 0),
-            data.get("main_axis"),
         )
 
     def load_project(self):
@@ -547,20 +580,12 @@ class ImageViewer(QMainWindow):
             return
         project_path = pl.Path(project_name)
         try:
-            (
-                names,
-                landmarks,
-                groups,
-                rotation,
-                main_axis,
-            ) = self._read_project(project_path)
-            rotation = float(rotation)
+            names, landmarks, groups = self._read_project(project_path)
         except (TypeError, ValueError) as error:
             QMessageBox.critical(self, "Load project", str(error))
             return
         self.landmark_names = names
         self.landmarks_groups = groups
-        self.main_axis = main_axis
         self.landmarks = landmarks
         self.landmark_combo.clear()
         self.landmark_combo.addItems(self.landmark_names)
@@ -766,64 +791,39 @@ class ImageViewer(QMainWindow):
         self.set_view_rect(corrected_rect)
         self.layer_manager.update_display()
 
-    def zoom_plus(self, factor):
+    def zoom_by(self, factor, anchor=None):
         if not hasattr(self, "pixmap") or self.pixmap.isNull():
-            print("No image loaded; cannot zoom")
             return
 
-        print(
-            f"[zoom_plus] called with factor = {factor}, scale_factor = {self.scale_factor}"
-        )
-
-        # Scrollbar and viewport
-        h_bar = self.scroll_area.horizontalScrollBar()
-        v_bar = self.scroll_area.verticalScrollBar()
-        viewport_size = self.scroll_area.viewport().size()
-
-        # Coordinates of the visible center in the viewport
-        cx = h_bar.value() + viewport_size.width() // 2
-        cy = v_bar.value() + viewport_size.height() // 2
-
-        # Correct for the inner margin in the QLabel (centering)
-        label_size = self.image.size()
-        pixmap_size = self.scaled_pixmap.size()
-        offset_x = max(0, (label_size.width() - pixmap_size.width()) // 2)
-        offset_y = max(0, (label_size.height() - pixmap_size.height()) // 2)
-        cx -= offset_x
-        cy -= offset_y
-
-        # Convert to original image coordinates
-        scale_x = self.view_rect.width() / self.scaled_pixmap.width()
-        scale_y = self.view_rect.height() / self.scaled_pixmap.height()
-        center_x = self.view_rect.x() + cx * scale_x
-        center_y = self.view_rect.y() + cy * scale_y
-
-        # Desired new size
-        new_width = self.view_rect.width() / factor
-        new_height = self.view_rect.height() / factor
-
-        # Minimum limits: prevent the rectangle from becoming too small
-        if factor < 1.0:
-            min_rect_width = self.scroll_area.viewport().width() * scale_x
-            min_rect_height = self.scroll_area.viewport().height() * scale_y
-            new_width = max(new_width, min_rect_width)
-            new_height = max(new_height, min_rect_height)
-
-        # Build the new centered rectangle
-        new_x = int(center_x - new_width / 2)
-        new_y = int(center_y - new_height / 2)
-        new_rect = QRect(new_x, new_y, int(new_width), int(new_height))
+        if factor <= 0:
+            return
+        if anchor is None:
+            anchor = QPointF(self.image.width() / 2, self.image.height() / 2)
+        anchor_image = self.image.map_to_pixmap_coordinates(anchor)
+        if self.scaled_pixmap.isNull() or self.view_rect.isEmpty():
+            return
+        relative_x = (anchor_image.x() - self.view_rect.x()) / self.view_rect.width()
+        relative_y = (anchor_image.y() - self.view_rect.y()) / self.view_rect.height()
+        zoom_level = getattr(self, "zoom_factor", 1.0)
+        zoom_level = max(0.25, min(20.0, zoom_level * factor))
+        new_width = max(1, int(self.pixmap.width() / zoom_level))
+        new_height = max(1, int(self.pixmap.height() / zoom_level))
+        new_x = int(anchor_image.x() - relative_x * new_width)
+        new_y = int(anchor_image.y() - relative_y * new_height)
+        new_rect = QRect(new_x, new_y, new_width, new_height)
 
         self.set_view_rect(new_rect)
-
-        # Set the new starting point for a possible drag
-        cursor_pos = self.image.mapFromGlobal(QCursor.pos())
-        self.drag_start_pos = cursor_pos
+        self.zoom_factor = zoom_level
 
         self.layer_manager.update_display()
 
+    def zoom_plus(self, factor):
+        """Backward-compatible center zoom used by the existing shortcuts."""
+        self.zoom_by(factor)
+
     def reset_view_rect(self):
         if self.pixmap:
+            self.zoom_factor = 1.0
             self.view_rect = QRect(0, 0, self.pixmap.width(), self.pixmap.height())
             container_size = self.scroll_area.viewport().size()
             cropped = self.pixmap.copy(self.view_rect)
@@ -850,7 +850,7 @@ class ImageViewer(QMainWindow):
             self.image.setCursor(Qt.CrossCursor)
 
     def reset(self):
-        self.landmarks = []
+        self.init_landmarks(self.landmark_names)
         self.layer_manager.update_display()
 
     def save_data(self):
@@ -888,6 +888,7 @@ class ImageViewer(QMainWindow):
         self.drag_start_pos = None
         self.selecting = False
         self.scale_factor = 1
+        self.zoom_factor = 1.0
         self.scale = None
         self.scale_unit = ""
 
