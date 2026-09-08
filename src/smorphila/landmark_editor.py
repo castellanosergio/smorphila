@@ -12,12 +12,14 @@ from dataclasses import dataclass, field
 from PySide6.QtCore import QPointF, QRectF, Qt, Signal
 from PySide6.QtGui import (
     QAction,
-    QColor,
     QCloseEvent,
+    QColor,
     QMouseEvent,
     QPainter,
     QPen,
     QPixmap,
+    QTransform,
+    QWheelEvent,
 )
 from PySide6.QtWidgets import (
     QApplication,
@@ -58,11 +60,65 @@ class Landmark:
 
 @dataclass
 class GroupDefinition:
-    """An ordered group of landmarks with optional segment orientations."""
+    """A group represented by an ordered list of oriented segments."""
 
     name: str
-    landmarks: list[str]
+    segments: list[tuple[str, str]]
     angles: list[float | None] = field(default_factory=list)
+
+    def __post_init__(self):
+        # Accept the former landmark-chain constructor while reading old data.
+        if self.segments and isinstance(self.segments[0], str):
+            names = self.segments  # type: ignore[assignment]
+            self.segments = list(zip(names, names[1:]))
+
+
+@dataclass
+class MainAxisDefinition:
+    """An oriented axis stored in original-image coordinates."""
+
+    origin: QPointF
+    destination: QPointF
+    alignment: str = "horizontal"
+
+
+def normalize_rotation(angle: float) -> float:
+    """Normalize a rotation to (-180, 180]."""
+
+    normalized = (angle + 180) % 360 - 180
+    return 180.0 if math.isclose(normalized, -180.0) else normalized
+
+
+def proposed_axis_rotation(
+    axis: MainAxisDefinition, current_rotation: float = 0
+) -> float:
+    """Return the rotation needed to align the displayed main axis."""
+
+    dx = axis.destination.x() - axis.origin.x()
+    dy = axis.destination.y() - axis.origin.y()
+    if dx == 0 and dy == 0:
+        raise ValueError("The main axis points must be distinct")
+    current_heading = math.degrees(math.atan2(dy, dx)) + current_rotation
+    target_heading = 0 if axis.alignment == "horizontal" else -90
+    return normalize_rotation(target_heading - current_heading)
+
+
+def trigonometric_heading(start: QPointF, end: QPointF) -> float:
+    """Return a screen-image vector heading with positive angles counterclockwise."""
+
+    return normalize_rotation(
+        math.degrees(math.atan2(-(end.y() - start.y()), end.x() - start.x()))
+    )
+
+
+def angle_from_axis(
+    start: QPointF, end: QPointF, axis: MainAxisDefinition | None
+) -> float:
+    """Return a segment angle relative to the oriented main axis."""
+
+    segment_heading = trigonometric_heading(start, end)
+    axis_heading = trigonometric_heading(axis.origin, axis.destination) if axis else 0.0
+    return normalize_rotation(segment_heading - axis_heading)
 
 
 def angle_choices(step: int) -> list[int]:
@@ -88,21 +144,18 @@ def validate_definitions(
             errors.append(f"Landmark '{landmark.name}' has not been placed.")
 
     for group in groups.values():
-        if len(group.landmarks) < 2:
-            errors.append(
-                f"Group '{group.name}' must contain at least two landmarks."
-            )
-        if len(set(group.landmarks)) != len(group.landmarks):
-            errors.append(f"Group '{group.name}' contains duplicate landmarks.")
-        for name in group.landmarks:
-            if name not in landmarks:
-                errors.append(
-                    f"Group '{group.name}' references unknown landmark '{name}'."
-                )
-        if group.angles and len(group.angles) != len(group.landmarks) - 1:
-            errors.append(
-                f"Group '{group.name}' must have one angle per segment."
-            )
+        if not group.segments:
+            errors.append(f"Group '{group.name}' must contain at least one segment.")
+        for start, end in group.segments:
+            if start == end:
+                errors.append(f"Group '{group.name}' contains a zero-length segment.")
+            for name in (start, end):
+                if name not in landmarks:
+                    errors.append(
+                        f"Group '{group.name}' references unknown landmark '{name}'."
+                    )
+        if group.angles and len(group.angles) != len(group.segments):
+            errors.append(f"Group '{group.name}' must have one angle per segment.")
         for angle in group.angles:
             if angle is not None and (angle < -180 or angle > 180):
                 errors.append(
@@ -122,12 +175,15 @@ def _toml_array(values: list[str]) -> str:
     return "[" + ", ".join(_toml_string(value) for value in values) + "]"
 
 
+def _toml_segments(values: list[tuple[str, str]]) -> str:
+    return "[" + ", ".join(_toml_array(list(value)) for value in values) + "]"
+
+
 def _toml_angle_array(values: list[float | None]) -> str:
     if not values or all(value is None for value in values):
         return "[]"
     serialized = [
-        _toml_string("free") if value is None else f"{value:.10g}"
-        for value in values
+        _toml_string("free") if value is None else f"{value:.10g}" for value in values
     ]
     serialized.append("0")
     return "[" + ", ".join(serialized) + "]"
@@ -137,13 +193,29 @@ def serialize_toml(
     image_path: pl.Path,
     landmarks: dict[str, Landmark],
     groups: dict[str, GroupDefinition],
+    main_axis: MainAxisDefinition | None = None,
+    image_rotation: float = 0,
 ) -> str:
     """Serialize editor data without requiring an additional TOML package."""
 
     lines = [
         f"source_image = {_toml_string(str(image_path))}",
+        f"image_rotation = {image_rotation:.10g}",
         f"landmark_names = {_toml_array(list(landmarks))}",
     ]
+
+    if main_axis is not None:
+        lines.extend(
+            [
+                "",
+                "[main_axis]",
+                f"origin = [{main_axis.origin.x():.10g}, {main_axis.origin.y():.10g}]",
+                "destination = "
+                f"[{main_axis.destination.x():.10g}, "
+                f"{main_axis.destination.y():.10g}]",
+                f"alignment = {_toml_string(main_axis.alignment)}",
+            ]
+        )
 
     for landmark in landmarks.values():
         lines.extend(
@@ -159,7 +231,7 @@ def serialize_toml(
             [
                 "",
                 f"[landmarks_groups.{_toml_string(group.name)}]",
-                f"landmarks = {_toml_array(group.landmarks)}",
+                f"segments = {_toml_segments(group.segments)}",
                 f"angles = {_toml_angle_array(group.angles)}",
             ]
         )
@@ -202,16 +274,29 @@ def _deserialize_angles(
             continue
         angle = _number(value, f"Angle in group '{group_name}'")
         if angle < -180 or angle > 180:
-            raise ValueError(
-                f"Angle in group '{group_name}' is outside -180..180"
-            )
+            raise ValueError(f"Angle in group '{group_name}' is outside -180..180")
         angles.append(angle)
     return [] if all(angle is None for angle in angles) else angles
 
 
+def _point_from_toml(value, description: str) -> QPointF:
+    if not isinstance(value, list) or len(value) != 2:
+        raise ValueError(f"{description} must contain two numbers")
+    return QPointF(
+        _number(value[0], f"{description} X coordinate"),
+        _number(value[1], f"{description} Y coordinate"),
+    )
+
+
 def deserialize_toml(
     content: str,
-) -> tuple[dict[str, Landmark], dict[str, GroupDefinition], list[str]]:
+) -> tuple[
+    dict[str, Landmark],
+    dict[str, GroupDefinition],
+    MainAxisDefinition | None,
+    float,
+    list[str],
+]:
     """Parse a saved editor configuration without changing the GUI state."""
 
     try:
@@ -238,13 +323,8 @@ def deserialize_toml(
         if not isinstance(position, dict):
             raise ValueError(f"Position for landmark '{name}' must be a table")
         coordinates = position.get("coordinates")
-        if not isinstance(coordinates, list) or len(coordinates) != 2:
-            raise ValueError(
-                f"Coordinates for landmark '{name}' must contain two numbers"
-            )
-        x = _number(coordinates[0], f"X coordinate for landmark '{name}'")
-        y = _number(coordinates[1], f"Y coordinate for landmark '{name}'")
-        landmarks[name] = Landmark(name, x, y)
+        point = _point_from_toml(coordinates, f"Coordinates for landmark '{name}'")
+        landmarks[name] = Landmark(name, point.x(), point.y())
 
     groups_data = data.get("landmarks_groups", {})
     if not isinstance(groups_data, dict):
@@ -253,24 +333,58 @@ def deserialize_toml(
     for name, group_data in groups_data.items():
         if not isinstance(group_data, dict):
             raise ValueError(f"Group '{name}' must be a table")
-        group_landmarks = group_data.get("landmarks")
-        if not isinstance(group_landmarks, list) or not all(
-            isinstance(item, str) for item in group_landmarks
-        ):
-            raise ValueError(f"Landmarks for group '{name}' must be strings")
-        if len(group_landmarks) < 2:
-            raise ValueError(f"Group '{name}' must contain at least two landmarks")
-        if len(set(group_landmarks)) != len(group_landmarks):
-            raise ValueError(f"Group '{name}' contains duplicate landmarks")
-        unknown = [item for item in group_landmarks if item not in landmarks]
+        raw_segments = group_data.get("segments")
+        if raw_segments is None:
+            group_landmarks = group_data.get("landmarks")
+            if not isinstance(group_landmarks, list) or not all(
+                isinstance(item, str) for item in group_landmarks
+            ):
+                raise ValueError(f"Landmarks for group '{name}' must be strings")
+            segments = list(zip(group_landmarks, group_landmarks[1:]))
+        else:
+            segments = []
+        if not isinstance(raw_segments, list):
+            if raw_segments is not None:
+                raise ValueError(f"Segments for group '{name}' must be an array")
+        if raw_segments is not None:
+            for segment in raw_segments:
+                if (
+                    not isinstance(segment, list)
+                    or len(segment) != 2
+                    or not all(isinstance(item, str) for item in segment)
+                ):
+                    raise ValueError(
+                        f"Each segment in group '{name}' must contain two landmarks"
+                    )
+                segments.append((segment[0], segment[1]))
+        unknown = [
+            item for segment in segments for item in segment if item not in landmarks
+        ]
         if unknown:
             raise ValueError(
                 f"Group '{name}' references unknown landmarks: {', '.join(unknown)}"
             )
-        angles = _deserialize_angles(
-            group_data.get("angles", []), name, len(group_landmarks) - 1
+        angles = _deserialize_angles(group_data.get("angles", []), name, len(segments))
+        groups[name] = GroupDefinition(name, segments, angles)
+
+    image_rotation = normalize_rotation(
+        _number(data.get("image_rotation", 0), "image_rotation")
+    )
+    axis_data = data.get("main_axis")
+    main_axis = None
+    if axis_data is not None:
+        if not isinstance(axis_data, dict):
+            raise ValueError("main_axis must be a table")
+        origin = _point_from_toml(axis_data.get("origin"), "Main axis origin")
+        destination = _point_from_toml(
+            axis_data.get("destination"), "Main axis destination"
         )
-        groups[name] = GroupDefinition(name, group_landmarks, angles)
+        alignment = axis_data.get("alignment", "horizontal")
+        if alignment not in {"horizontal", "vertical"}:
+            raise ValueError("Main axis alignment must be horizontal or vertical")
+        if origin == destination:
+            raise ValueError("The main axis points must be distinct")
+        main_axis = MainAxisDefinition(origin, destination, alignment)
 
     warnings = []
     if "angles" in data:
@@ -278,7 +392,7 @@ def deserialize_toml(
             "Legacy vertex-first angle tables were ignored because they cannot be "
             "converted to oriented segment constraints."
         )
-    return landmarks, groups, warnings
+    return landmarks, groups, main_axis, image_rotation, warnings
 
 
 class AngleWheel(QWidget):
@@ -286,10 +400,16 @@ class AngleWheel(QWidget):
 
     angle_selected = Signal(int)
 
-    def __init__(self, step: int, selected_angle: float | None = None):
+    def __init__(
+        self,
+        step: int,
+        selected_angle: float | None = None,
+        reference_angle: float = 0,
+    ):
         super().__init__()
         self.step = step
         self.selected_angle = selected_angle
+        self.reference_angle = reference_angle
         self.hover_angle: int | None = None
         self.setMinimumSize(620, 620)
         self.setMouseTracking(True)
@@ -305,7 +425,7 @@ class AngleWheel(QWidget):
         distance = math.hypot(dx, dy)
         if distance < 20 or distance > min(self.width(), self.height()) / 2:
             return None
-        raw_angle = math.degrees(math.atan2(dy, dx))
+        raw_angle = math.degrees(math.atan2(-dy, dx)) - self.reference_angle
         snapped = round(raw_angle / self.step) * self.step
         return max(-180, min(180, snapped))
 
@@ -341,9 +461,10 @@ class AngleWheel(QWidget):
             if angle == 180:
                 continue
             radians = math.radians(angle)
+            display_radians = math.radians(angle + self.reference_angle)
             endpoint = QPointF(
-                center.x() + radius * math.cos(radians),
-                center.y() + radius * math.sin(radians),
+                center.x() + radius * math.cos(display_radians),
+                center.y() - radius * math.sin(display_radians),
             )
             is_shared_axis = angle == -180
             is_selected = self.selected_angle == angle or (
@@ -359,8 +480,8 @@ class AngleWheel(QWidget):
 
             label_radius = radius + 26
             label_point = QPointF(
-                center.x() + label_radius * math.cos(radians),
-                center.y() + label_radius * math.sin(radians),
+                center.x() + label_radius * math.cos(display_radians),
+                center.y() - label_radius * math.sin(display_radians),
             )
             label = "-180° / 180°" if angle == -180 else f"{angle}°"
             painter.setPen(QPen(QColor("#eeeeee"), 1))
@@ -378,6 +499,15 @@ class AngleWheel(QWidget):
 class RelativeAngleDiagram(AngleWheel):
     """Joint diagram for selecting a turn relative to an incoming segment."""
 
+    def __init__(
+        self,
+        step: int,
+        selected_angle: float | None = None,
+        incoming_angle: float = 180,
+    ):
+        super().__init__(step, selected_angle, incoming_angle)
+        self.incoming_angle = incoming_angle
+
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
@@ -386,19 +516,24 @@ class RelativeAngleDiagram(AngleWheel):
         painter.fillRect(self.rect(), QColor("#252525"))
 
         painter.setPen(QPen(QColor("#aaaaaa"), 5))
-        incoming_start = QPointF(center.x() - radius, center.y())
-        painter.drawLine(incoming_start, center)
-        self._draw_incoming_arrow(painter, center)
+        incoming_radians = math.radians(self.incoming_angle)
+        incoming_start = QPointF(
+            center.x() - radius * math.cos(incoming_radians),
+            center.y() + radius * math.sin(incoming_radians),
+        )
+        incoming_end = center
+        painter.drawLine(incoming_start, incoming_end)
+        self._draw_incoming_arrow(painter, incoming_start, incoming_end)
         painter.setPen(QPen(QColor("#aaaaaa"), 1, Qt.DashLine))
         painter.drawLine(center, QPointF(center.x() + radius, center.y()))
 
         for angle in self.available_angles:
             if angle == 180:
                 continue
-            radians = math.radians(angle)
+            radians = math.radians(angle + self.incoming_angle)
             endpoint = QPointF(
                 center.x() + radius * math.cos(radians),
-                center.y() + radius * math.sin(radians),
+                center.y() - radius * math.sin(radians),
             )
             is_shared_axis = angle == -180
             is_selected = self.selected_angle == angle or (
@@ -422,7 +557,7 @@ class RelativeAngleDiagram(AngleWheel):
             label_radius = radius + 28
             label_point = QPointF(
                 center.x() + label_radius * math.cos(radians),
-                center.y() + label_radius * math.sin(radians),
+                center.y() - label_radius * math.sin(radians),
             )
             if angle == -180:
                 label = "U-turn ±180°"
@@ -444,13 +579,13 @@ class RelativeAngleDiagram(AngleWheel):
         painter.drawText(
             QRectF(0, 5, self.width(), 24),
             Qt.AlignCenter,
-            "Negative turn: counterclockwise",
+            "Negative turn: clockwise",
         )
         painter.setPen(QPen(QColor("#ff8b68"), 1))
         painter.drawText(
             QRectF(0, self.height() - 29, self.width(), 24),
             Qt.AlignCenter,
-            "Positive turn: clockwise",
+            "Positive turn: counterclockwise",
         )
         painter.setPen(QPen(QColor("#dddddd"), 1))
         painter.drawText(
@@ -460,9 +595,18 @@ class RelativeAngleDiagram(AngleWheel):
         )
 
     @staticmethod
-    def _draw_incoming_arrow(painter: QPainter, vertex: QPointF):
-        painter.drawLine(vertex, vertex + QPointF(-14, -9))
-        painter.drawLine(vertex, vertex + QPointF(-14, 9))
+    def _draw_incoming_arrow(painter: QPainter, start: QPointF, end: QPointF):
+        """Draw an arrow whose tip is at the incoming segment endpoint."""
+
+        direction = math.atan2(end.y() - start.y(), end.x() - start.x())
+        wing_length = 16
+        wing_angle = math.radians(145)
+        for offset in (-wing_angle, wing_angle):
+            wing_end = QPointF(
+                end.x() + wing_length * math.cos(direction + offset),
+                end.y() + wing_length * math.sin(direction + offset),
+            )
+            painter.drawLine(end, wing_end)
 
 
 class AngleSelectionDialog(QDialog):
@@ -474,6 +618,8 @@ class AngleSelectionDialog(QDialog):
         step: int,
         selected_angle: float | None,
         relative: bool,
+        reference_angle: float = 0,
+        incoming_angle: float = 180,
         parent: QWidget | None = None,
     ):
         super().__init__(parent)
@@ -493,7 +639,11 @@ class AngleSelectionDialog(QDialog):
         layout.addWidget(instruction)
 
         selector_class = RelativeAngleDiagram if relative else AngleWheel
-        self.selector = selector_class(step, selected_angle)
+        self.selector = (
+            RelativeAngleDiagram(step, selected_angle, incoming_angle)
+            if relative
+            else AngleWheel(step, selected_angle, reference_angle)
+        )
         self.selector.angle_selected.connect(self._select_angle)
         layout.addWidget(self.selector)
 
@@ -536,12 +686,21 @@ class ImageCanvas(QWidget):
     """Display an image and emit clicks in original-image coordinates."""
 
     image_clicked = Signal(QPointF)
+    zoom_changed = Signal(float)
 
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
+        self.source_pixmap = QPixmap()
         self.pixmap = QPixmap()
+        self.source_to_display = QTransform()
+        self.display_to_source = QTransform()
+        self.rotation_degrees = 0.0
+        self.zoom_factor = 1.0
+        self.view_center = QPointF(0, 0)
         self.landmarks: dict[str, Landmark] = {}
         self.groups: dict[str, GroupDefinition] = {}
+        self.main_axis: MainAxisDefinition | None = None
+        self.pending_axis_points: list[QPointF] = []
         self.selected_landmark = ""
         self.setMinimumSize(500, 400)
         self.setCursor(Qt.CrossCursor)
@@ -550,40 +709,100 @@ class ImageCanvas(QWidget):
         pixmap = QPixmap(str(image_path))
         if pixmap.isNull():
             return False
-        self.pixmap = pixmap
-        self.update()
+        self.source_pixmap = pixmap
+        self.set_rotation(0)
         return True
+
+    def set_rotation(self, angle: float):
+        self.rotation_degrees = normalize_rotation(angle)
+        if self.source_pixmap.isNull():
+            return
+        rotation = QTransform().rotate(self.rotation_degrees)
+        self.source_to_display = QPixmap.trueMatrix(
+            rotation, self.source_pixmap.width(), self.source_pixmap.height()
+        )
+        self.display_to_source, invertible = self.source_to_display.inverted()
+        if not invertible:
+            raise ValueError("The image rotation transform is not invertible")
+        self.pixmap = self.source_pixmap.transformed(rotation, Qt.SmoothTransformation)
+        self.zoom_factor = 1.0
+        self.view_center = QPointF(self.pixmap.width() / 2, self.pixmap.height() / 2)
+        self.zoom_changed.emit(self.zoom_factor)
+        self.update()
 
     def image_rect(self) -> QRectF:
         if self.pixmap.isNull():
             return QRectF()
-        scale = min(
-            self.width() / self.pixmap.width(), self.height() / self.pixmap.height()
+        scale = (
+            min(
+                self.width() / self.pixmap.width(), self.height() / self.pixmap.height()
+            )
+            * self.zoom_factor
         )
         width = self.pixmap.width() * scale
         height = self.pixmap.height() * scale
         return QRectF(
-            (self.width() - width) / 2,
-            (self.height() - height) / 2,
+            self.width() / 2 - self.view_center.x() * scale,
+            self.height() / 2 - self.view_center.y() * scale,
             width,
             height,
         )
 
+    def zoom_by(self, factor: float, anchor: QPointF | None = None):
+        """Zoom around a widget point while preserving its image location."""
+
+        if self.pixmap.isNull() or factor <= 0:
+            return
+        old_rect = self.image_rect()
+        if anchor is None:
+            anchor = QPointF(self.width() / 2, self.height() / 2)
+        old_scale = old_rect.width() / self.pixmap.width()
+        if old_scale == 0:
+            return
+        display_point = QPointF(
+            (anchor.x() - old_rect.left()) / old_scale,
+            (anchor.y() - old_rect.top()) / old_scale,
+        )
+        self.zoom_factor = max(0.25, min(20.0, self.zoom_factor * factor))
+        new_scale = (
+            min(
+                self.width() / self.pixmap.width(),
+                self.height() / self.pixmap.height(),
+            )
+            * self.zoom_factor
+        )
+        self.view_center = QPointF(
+            display_point.x() - (anchor.x() - self.width() / 2) / new_scale,
+            display_point.y() - (anchor.y() - self.height() / 2) / new_scale,
+        )
+        self.zoom_changed.emit(self.zoom_factor)
+        self.update()
+
+    def reset_zoom(self):
+        """Fit the rotated image to the canvas."""
+
+        self.zoom_factor = 1.0
+        self.view_center = QPointF(self.pixmap.width() / 2, self.pixmap.height() / 2)
+        self.zoom_changed.emit(self.zoom_factor)
+        self.update()
+
     def image_to_widget(self, point: QPointF) -> QPointF:
         rect = self.image_rect()
+        display_point = self.source_to_display.map(point)
         return QPointF(
-            rect.left() + point.x() * rect.width() / self.pixmap.width(),
-            rect.top() + point.y() * rect.height() / self.pixmap.height(),
+            rect.left() + display_point.x() * rect.width() / self.pixmap.width(),
+            rect.top() + display_point.y() * rect.height() / self.pixmap.height(),
         )
 
     def widget_to_image(self, point: QPointF) -> QPointF | None:
         rect = self.image_rect()
         if rect.isEmpty() or not rect.contains(point):
             return None
-        return QPointF(
+        display_point = QPointF(
             (point.x() - rect.left()) * self.pixmap.width() / rect.width(),
             (point.y() - rect.top()) * self.pixmap.height() / rect.height(),
         )
+        return self.display_to_source.map(display_point)
 
     def closest_landmark(
         self, point: QPointF, maximum_distance: float = 18
@@ -609,6 +828,14 @@ class ImageCanvas(QWidget):
         if image_point is not None:
             self.image_clicked.emit(image_point)
 
+    def wheelEvent(self, event: QWheelEvent):
+        if self.pixmap.isNull() or event.angleDelta().y() == 0:
+            event.ignore()
+            return
+        steps = event.angleDelta().y() / 120
+        self.zoom_by(1.2**steps, event.position())
+        event.accept()
+
     def paintEvent(self, event):
         super().paintEvent(event)
         painter = QPainter(self)
@@ -622,6 +849,7 @@ class ImageCanvas(QWidget):
         target = self.image_rect()
         painter.drawPixmap(target, self.pixmap, QRectF(self.pixmap.rect()))
         self._draw_groups(painter)
+        self._draw_main_axis(painter)
         self._draw_landmarks(painter)
 
     def _landmark_point(self, name: str) -> QPointF | None:
@@ -633,15 +861,12 @@ class ImageCanvas(QWidget):
     def _draw_groups(self, painter: QPainter):
         painter.setPen(QPen(QColor(60, 180, 255, 200), 3))
         for group in self.groups.values():
-            points = [self._landmark_point(name) for name in group.landmarks]
-            for index, (first, second) in enumerate(zip(points, points[1:])):
+            for index, (start, end) in enumerate(group.segments):
+                first = self._landmark_point(start)
+                second = self._landmark_point(end)
                 if first is not None and second is not None:
                     painter.drawLine(first, second)
-                    angle = (
-                        group.angles[index]
-                        if index < len(group.angles)
-                        else None
-                    )
+                    angle = group.angles[index] if index < len(group.angles) else None
                     if angle is not None:
                         self._draw_arrow_head(painter, first, second)
                         midpoint = (first + second) / 2
@@ -661,6 +886,30 @@ class ImageCanvas(QWidget):
                 end.y() + arrow_length * math.sin(direction + offset),
             )
             painter.drawLine(end, arrow_end)
+
+    def _draw_main_axis(self, painter: QPainter):
+        if self.main_axis is None:
+            self._draw_pending_axis_origin(painter)
+            return
+        origin = self.image_to_widget(self.main_axis.origin)
+        destination = self.image_to_widget(self.main_axis.destination)
+        painter.setPen(QPen(QColor("#ff40d7"), 4))
+        painter.drawLine(origin, destination)
+        self._draw_arrow_head(painter, origin, destination)
+        painter.setBrush(QColor("#ffffff"))
+        painter.drawEllipse(origin, 6, 6)
+        painter.setPen(QPen(QColor("#ffffff"), 1))
+        painter.drawText(origin + QPointF(8, -8), "Main axis origin")
+        self._draw_pending_axis_origin(painter)
+
+    def _draw_pending_axis_origin(self, painter: QPainter):
+        if not self.pending_axis_points:
+            return
+        origin = self.image_to_widget(self.pending_axis_points[0])
+        painter.setPen(QPen(QColor("#ff40d7"), 3))
+        painter.setBrush(QColor("#ffffff"))
+        painter.drawEllipse(origin, 6, 6)
+        painter.drawText(origin + QPointF(8, -8), "New main axis origin")
 
     def _draw_landmarks(self, painter: QPainter):
         for landmark in self.landmarks.values():
@@ -688,9 +937,13 @@ class LandmarkEditor(QMainWindow):
         self.output_path: pl.Path | None = None
         self.landmarks: dict[str, Landmark] = {}
         self.groups: dict[str, GroupDefinition] = {}
+        self.main_axis: MainAxisDefinition | None = None
+        self.image_rotation = 0.0
         self.mode = "idle"
         self.pending_name = ""
-        self.pending_landmarks: list[str] = []
+        self.pending_segments: list[tuple[str, str]] = []
+        self.pending_segment_start: str | None = None
+        self.pending_axis_points: list[QPointF] = []
         self.dirty = False
 
         self.setWindowTitle("SMORPHILA Landmark Definition Editor")
@@ -703,13 +956,16 @@ class LandmarkEditor(QMainWindow):
         self.canvas = ImageCanvas()
         self.canvas.landmarks = self.landmarks
         self.canvas.groups = self.groups
+        self.canvas.main_axis = self.main_axis
+        self.canvas.pending_axis_points = self.pending_axis_points
         self.canvas.image_clicked.connect(self._handle_canvas_click)
 
         editor_panel = QWidget()
         editor_layout = QVBoxLayout(editor_panel)
+        editor_layout.addWidget(self._build_axis_section())
         editor_layout.addWidget(self._build_landmark_group())
-        editor_layout.addWidget(self._build_angle_group())
         editor_layout.addWidget(self._build_group_section())
+        editor_layout.addWidget(self._build_angle_group())
         editor_layout.addStretch()
         editor_panel.setMinimumWidth(340)
 
@@ -721,7 +977,40 @@ class LandmarkEditor(QMainWindow):
 
         self.status_bar = QStatusBar()
         self.setStatusBar(self.status_bar)
+        self.zoom_label = QLabel("Zoom: 100%")
+        self.status_bar.addPermanentWidget(self.zoom_label)
+        self.canvas.zoom_changed.connect(self._update_zoom_label)
         self.status_bar.showMessage("Open an image to begin")
+
+    def _build_axis_section(self) -> QGroupBox:
+        group = QGroupBox("Main image axis")
+        layout = QVBoxLayout(group)
+        alignment_layout = QHBoxLayout()
+        alignment_layout.addWidget(QLabel("Alignment:"))
+        self.axis_alignment_combo = QComboBox()
+        self.axis_alignment_combo.addItem("Horizontal (right)", "horizontal")
+        self.axis_alignment_combo.addItem("Vertical (up)", "vertical")
+        alignment_layout.addWidget(self.axis_alignment_combo)
+        layout.addLayout(alignment_layout)
+
+        buttons = QHBoxLayout()
+        self.define_axis_button = QPushButton("Define axis")
+        self.clear_axis_button = QPushButton("Clear axis")
+        self.apply_rotation_button = QPushButton("Apply rotation")
+        buttons.addWidget(self.define_axis_button)
+        buttons.addWidget(self.clear_axis_button)
+        buttons.addWidget(self.apply_rotation_button)
+        layout.addLayout(buttons)
+        self.rotation_proposal_label = QLabel("Define an axis to calculate rotation")
+        layout.addWidget(self.rotation_proposal_label)
+
+        self.define_axis_button.clicked.connect(self._start_axis_definition)
+        self.clear_axis_button.clicked.connect(self._clear_axis)
+        self.apply_rotation_button.clicked.connect(self._apply_axis_rotation)
+        self.axis_alignment_combo.currentIndexChanged.connect(
+            self._change_axis_alignment
+        )
+        return group
 
     def _build_landmark_group(self) -> QGroupBox:
         group = QGroupBox("Landmarks")
@@ -803,11 +1092,19 @@ class LandmarkEditor(QMainWindow):
         self.group_list = QListWidget()
         self.group_list.setMinimumHeight(100)
         layout.addWidget(self.group_list)
+        segment_buttons = QHBoxLayout()
+        self.remove_segment_button = QPushButton("Remove segment")
+        self.reverse_segment_button = QPushButton("Reverse segment")
+        segment_buttons.addWidget(self.remove_segment_button)
+        segment_buttons.addWidget(self.reverse_segment_button)
+        layout.addLayout(segment_buttons)
         self.group_list.currentRowChanged.connect(self._refresh_segments)
         self.define_group_button.clicked.connect(self._start_group)
         self.finish_group_button.clicked.connect(self._finish_group)
         self.cancel_group_button.clicked.connect(self._cancel_definition)
         self.delete_group_button.clicked.connect(self._delete_group)
+        self.remove_segment_button.clicked.connect(self._remove_selected_segment)
+        self.reverse_segment_button.clicked.connect(self._reverse_selected_segment)
         return group
 
     def _build_menu(self):
@@ -824,11 +1121,45 @@ class LandmarkEditor(QMainWindow):
         file_menu.addAction(save_action)
         file_menu.addSeparator()
         file_menu.addAction(exit_action)
+
+        view_menu = self.menuBar().addMenu("View")
+        zoom_in_action = QAction("Zoom in", self)
+        zoom_out_action = QAction("Zoom out", self)
+        fit_action = QAction("Fit image", self)
+        zoom_in_action.setShortcut("Ctrl++")
+        zoom_out_action.setShortcut("Ctrl+-")
+        fit_action.setShortcut("Ctrl+0")
+        zoom_in_action.triggered.connect(self._zoom_in)
+        zoom_out_action.triggered.connect(self._zoom_out)
+        fit_action.triggered.connect(self._fit_image)
+        view_menu.addAction(zoom_in_action)
+        view_menu.addAction(zoom_out_action)
+        view_menu.addSeparator()
+        view_menu.addAction(fit_action)
+        self.zoom_in_action = zoom_in_action
+        self.zoom_out_action = zoom_out_action
+        self.fit_image_action = fit_action
         self.save_action = save_action
         self.save_action.setEnabled(False)
 
+    def _update_zoom_label(self, _value: float | None = None):
+        self.zoom_label.setText(f"Zoom: {self.canvas.zoom_factor:.0%}")
+
+    def _zoom_in(self):
+        self.canvas.zoom_by(1.2)
+
+    def _zoom_out(self):
+        self.canvas.zoom_by(1 / 1.2)
+
+    def _fit_image(self):
+        self.canvas.reset_zoom()
+
     def _set_editor_enabled(self, enabled: bool):
         for widget in (
+            self.axis_alignment_combo,
+            self.define_axis_button,
+            self.clear_axis_button,
+            self.apply_rotation_button,
             self.landmark_name_edit,
             self.add_landmark_button,
             self.place_landmark_button,
@@ -844,8 +1175,16 @@ class LandmarkEditor(QMainWindow):
             self.cancel_group_button,
             self.delete_group_button,
             self.group_list,
+            self.remove_segment_button,
+            self.reverse_segment_button,
         ):
             widget.setEnabled(enabled)
+        for action in (
+            self.zoom_in_action,
+            self.zoom_out_action,
+            self.fit_image_action,
+        ):
+            action.setEnabled(enabled)
         self.save_action.setEnabled(enabled)
 
     def _confirm_discard(self) -> bool:
@@ -877,15 +1216,25 @@ class LandmarkEditor(QMainWindow):
         self.output_path = None
         self.landmarks = {}
         self.groups = {}
+        self.main_axis = None
+        self.image_rotation = 0.0
         self.mode = "idle"
-        self.pending_landmarks.clear()
+        self.pending_segments.clear()
+        self.pending_segment_start = None
+        self.pending_axis_points.clear()
         self.finish_group_button.setEnabled(False)
         status_message = "Image loaded. Add a landmark to begin."
         configuration_path = image_path.with_suffix(".toml")
         if configuration_path.is_file():
             try:
                 content = configuration_path.read_text(encoding="utf-8")
-                self.landmarks, self.groups, warnings = deserialize_toml(content)
+                (
+                    self.landmarks,
+                    self.groups,
+                    self.main_axis,
+                    self.image_rotation,
+                    warnings,
+                ) = deserialize_toml(content)
             except (OSError, ValueError) as error:
                 QMessageBox.critical(
                     self,
@@ -898,11 +1247,66 @@ class LandmarkEditor(QMainWindow):
                 if warnings:
                     QMessageBox.warning(self, "Load TOML", "\n".join(warnings))
         self._sync_canvas_data()
+        self.canvas.set_rotation(self.image_rotation)
+        self._set_axis_alignment_widget()
         self._refresh_lists()
         self._set_editor_enabled(True)
+        self._update_rotation_proposal()
         self.dirty = False
         self.setWindowTitle(f"{image_path.name} - SMORPHILA Landmark Definition Editor")
         self.status_bar.showMessage(status_message)
+
+    def _start_axis_definition(self):
+        self.mode = "axis"
+        self.pending_axis_points.clear()
+        self.pending_segments.clear()
+        self.pending_segment_start = None
+        self.finish_group_button.setEnabled(False)
+        self.status_bar.showMessage("Click the main axis origin.")
+        self.canvas.update()
+
+    def _clear_axis(self):
+        self.main_axis = None
+        self.pending_axis_points.clear()
+        self.canvas.main_axis = None
+        self.mode = "idle"
+        self.dirty = True
+        self._update_rotation_proposal()
+        self.canvas.update()
+        self.status_bar.showMessage("Main image axis cleared.")
+
+    def _change_axis_alignment(self):
+        if self.main_axis is not None:
+            self.main_axis.alignment = self.axis_alignment_combo.currentData()
+            self.dirty = True
+        self._update_rotation_proposal()
+
+    def _set_axis_alignment_widget(self):
+        alignment = self.main_axis.alignment if self.main_axis else "horizontal"
+        index = self.axis_alignment_combo.findData(alignment)
+        self.axis_alignment_combo.blockSignals(True)
+        self.axis_alignment_combo.setCurrentIndex(max(0, index))
+        self.axis_alignment_combo.blockSignals(False)
+
+    def _update_rotation_proposal(self):
+        if self.main_axis is None:
+            self.rotation_proposal_label.setText("Define an axis to calculate rotation")
+            self.apply_rotation_button.setEnabled(False)
+            return
+        proposed = proposed_axis_rotation(self.main_axis, self.image_rotation)
+        self.rotation_proposal_label.setText(f"Suggested rotation: {proposed:+.2f}°")
+        self.apply_rotation_button.setEnabled(not math.isclose(proposed, 0))
+
+    def _apply_axis_rotation(self):
+        if self.main_axis is None:
+            QMessageBox.warning(self, "Main image axis", "Define the axis first.")
+            return
+        rotation = proposed_axis_rotation(self.main_axis, self.image_rotation)
+        self.image_rotation = normalize_rotation(self.image_rotation + rotation)
+        self.canvas.set_rotation(self.image_rotation)
+        self.dirty = True
+        self._update_rotation_proposal()
+        self.status_bar.showMessage(f"Applied image rotation: {rotation:+.2f}°.")
 
     def _clean_name(self, edit: QLineEdit, kind: str, collection: dict) -> str | None:
         name = edit.text().strip()
@@ -922,6 +1326,7 @@ class LandmarkEditor(QMainWindow):
         self.landmark_name_edit.clear()
         self._refresh_landmarks()
         self.landmark_list.setCurrentRow(len(self.landmarks) - 1)
+        self.pending_axis_points.clear()
         self.mode = "place"
         self.dirty = True
         self.status_bar.showMessage(f"Click the image to place landmark '{name}'.")
@@ -935,6 +1340,7 @@ class LandmarkEditor(QMainWindow):
         if name is None:
             QMessageBox.warning(self, "Landmark", "Select a landmark first.")
             return
+        self.pending_axis_points.clear()
         self.mode = "place"
         self.status_bar.showMessage(f"Click the image to place landmark '{name}'.")
 
@@ -964,8 +1370,9 @@ class LandmarkEditor(QMainWindow):
                 renamed_landmarks[name] = landmark
         self.landmarks = renamed_landmarks
         for group in self.groups.values():
-            group.landmarks = [
-                new_name if name == old_name else name for name in group.landmarks
+            group.segments = [
+                tuple(new_name if name == old_name else name for name in segment)
+                for segment in group.segments
             ]
         self._sync_canvas_data()
         self.landmark_name_edit.clear()
@@ -979,7 +1386,9 @@ class LandmarkEditor(QMainWindow):
             QMessageBox.warning(self, "Landmark", "Select a landmark first.")
             return
         references = [
-            group.name for group in self.groups.values() if name in group.landmarks
+            group.name
+            for group in self.groups.values()
+            if any(name in segment for segment in group.segments)
         ]
         if references:
             QMessageBox.warning(
@@ -1020,14 +1429,27 @@ class LandmarkEditor(QMainWindow):
             return
         group, index = selection
         self._ensure_segment_angles(group)
-        start = group.landmarks[index]
-        end = group.landmarks[index + 1]
+        start, end = group.segments[index]
         step = int(self.angle_step_combo.currentText().removesuffix("°"))
+        incoming_angle = 180.0
+        incoming_segment = next(
+            (
+                segment
+                for segment in reversed(group.segments[:index])
+                if segment[1] == start
+            ),
+            None,
+        )
+        if incoming_segment is not None:
+            incoming_index = group.segments.index(incoming_segment)
+            incoming_angle = self._defined_segment_heading(group, incoming_index)
         dialog = AngleSelectionDialog(
             f"{start} → {end}",
             step,
             group.angles[index],
-            relative=index > 0,
+            relative=incoming_segment is not None,
+            reference_angle=self._main_axis_heading(),
+            incoming_angle=incoming_angle,
             parent=self,
         )
         if dialog.exec() != QDialog.Accepted:
@@ -1038,6 +1460,56 @@ class LandmarkEditor(QMainWindow):
         self.segment_list.setCurrentRow(index)
         self.dirty = True
         self.canvas.update()
+
+    def _defined_segment_heading(
+        self,
+        group: GroupDefinition,
+        index: int,
+        visited: set[int] | None = None,
+    ) -> float:
+        """Return a segment heading using imposed angles where available."""
+
+        visited = set() if visited is None else visited
+        if index in visited:
+            return 180.0
+        visited.add(index)
+        start, end = group.segments[index]
+        imposed = group.angles[index] if index < len(group.angles) else None
+        incoming = next(
+            (
+                (candidate_index, segment)
+                for candidate_index, segment in reversed(
+                    list(enumerate(group.segments[:index]))
+                )
+                if segment[1] == start
+            ),
+            None,
+        )
+        if imposed is not None:
+            if incoming is not None:
+                previous_heading = self._defined_segment_heading(
+                    group, incoming[0], visited
+                )
+                return normalize_rotation(previous_heading + imposed)
+            if self.canvas.main_axis is not None:
+                return normalize_rotation(self._main_axis_heading() + imposed)
+        start_point = self.landmarks[start]
+        end_point = self.landmarks[end]
+        if start_point.is_placed and end_point.is_placed:
+            return trigonometric_heading(
+                self.canvas.image_to_widget(QPointF(start_point.x, start_point.y)),
+                self.canvas.image_to_widget(QPointF(end_point.x, end_point.y)),
+            )
+        return 180.0
+
+    def _main_axis_heading(self) -> float:
+        if self.canvas.main_axis is None:
+            return 0.0
+        axis = self.canvas.main_axis
+        return trigonometric_heading(
+            self.canvas.image_to_widget(axis.origin),
+            self.canvas.image_to_widget(axis.destination),
+        )
 
     def _clear_selected_segment_angle(self):
         selection = self._selected_segment()
@@ -1054,7 +1526,7 @@ class LandmarkEditor(QMainWindow):
 
     @staticmethod
     def _ensure_segment_angles(group: GroupDefinition):
-        segment_count = len(group.landmarks) - 1
+        segment_count = len(group.segments)
         if not group.angles:
             group.angles = [None] * segment_count
 
@@ -1070,12 +1542,14 @@ class LandmarkEditor(QMainWindow):
         if len([item for item in self.landmarks.values() if item.is_placed]) < 2:
             QMessageBox.warning(self, "Group", "Place at least two landmarks first.")
             return
+        self.pending_axis_points.clear()
         self.mode = "group"
         self.pending_name = name
-        self.pending_landmarks = []
+        self.pending_segments = []
+        self.pending_segment_start = None
         self.finish_group_button.setEnabled(True)
         self.status_bar.showMessage(
-            "Select group landmarks in order, then click Finish."
+            "Click two landmarks for each oriented segment, then click Finish."
         )
 
     def _cancel_definition(self):
@@ -1083,22 +1557,24 @@ class LandmarkEditor(QMainWindow):
             return
         self.mode = "idle"
         self.pending_name = ""
-        self.pending_landmarks.clear()
+        self.pending_segments.clear()
+        self.pending_segment_start = None
         self.finish_group_button.setEnabled(False)
         self.status_bar.showMessage("Definition cancelled.")
 
     def _finish_group(self):
         if self.mode != "group":
             return
-        if len(self.pending_landmarks) < 2:
-            QMessageBox.warning(self, "Group", "Select at least two landmarks.")
+        if not self.pending_segments:
+            QMessageBox.warning(self, "Group", "Select at least one segment.")
             return
         self.groups[self.pending_name] = GroupDefinition(
-            self.pending_name, self.pending_landmarks.copy()
+            self.pending_name, self.pending_segments.copy()
         )
         self.group_name_edit.clear()
         self.mode = "idle"
-        self.pending_landmarks.clear()
+        self.pending_segments.clear()
+        self.pending_segment_start = None
         self.finish_group_button.setEnabled(False)
         self._refresh_groups()
         self._select_group_by_name(self.pending_name)
@@ -1119,7 +1595,58 @@ class LandmarkEditor(QMainWindow):
         self.dirty = True
         self.canvas.update()
 
+    def _remove_selected_segment(self):
+        selection = self._selected_segment()
+        if selection is None:
+            return
+        group, index = selection
+        group.segments.pop(index)
+        if index < len(group.angles):
+            group.angles.pop(index)
+        self._compact_free_angles(group)
+        self._refresh_segments()
+        self.dirty = True
+        self.canvas.update()
+
+    def _reverse_selected_segment(self):
+        selection = self._selected_segment()
+        if selection is None:
+            return
+        group, index = selection
+        start, end = group.segments[index]
+        group.segments[index] = (end, start)
+        self._refresh_segments()
+        self.segment_list.setCurrentRow(index)
+        self.dirty = True
+        self.canvas.update()
+
     def _handle_canvas_click(self, image_point: QPointF):
+        if self.mode == "axis":
+            if not self.pending_axis_points:
+                self.pending_axis_points.append(image_point)
+                self.status_bar.showMessage("Click the main axis destination.")
+                self.canvas.update()
+                return
+            origin = self.pending_axis_points[0]
+            if origin == image_point:
+                QMessageBox.warning(
+                    self, "Main image axis", "The two points must be distinct."
+                )
+                return
+            self.main_axis = MainAxisDefinition(
+                origin,
+                image_point,
+                self.axis_alignment_combo.currentData(),
+            )
+            self.canvas.main_axis = self.main_axis
+            self.pending_axis_points.clear()
+            self.mode = "idle"
+            self.dirty = True
+            self._update_rotation_proposal()
+            self.canvas.update()
+            self.status_bar.showMessage("Main image axis defined.")
+            return
+
         if self.mode == "place":
             name = self._selected_landmark_name()
             if name is None:
@@ -1142,14 +1669,24 @@ class LandmarkEditor(QMainWindow):
         if name is None:
             self.status_bar.showMessage("Click closer to a placed landmark.")
             return
-        if name in self.pending_landmarks:
-            self.status_bar.showMessage("Each landmark can only be selected once.")
+        if self.pending_segment_start is None:
+            self.pending_segment_start = name
+            self.status_bar.showMessage(
+                f"Segment start '{name}' selected. Click its destination landmark."
+            )
+            self.canvas.update()
             return
-        self.pending_landmarks.append(name)
-
+        if self.pending_segment_start == name:
+            self.status_bar.showMessage(
+                "A segment must connect two different landmarks."
+            )
+            return
+        self.pending_segments.append((self.pending_segment_start, name))
+        self.pending_segment_start = None
         self.status_bar.showMessage(
-            f"Added '{name}'. Select another landmark or click Finish."
+            "Segment added. Select the next segment's start landmark or click Finish."
         )
+        self.canvas.update()
 
     def _refresh_landmarks(self):
         selected_name = self._selected_landmark_name()
@@ -1171,9 +1708,7 @@ class LandmarkEditor(QMainWindow):
         if group_name is None:
             return
         group = self.groups[group_name]
-        for index, (start, end) in enumerate(
-            zip(group.landmarks, group.landmarks[1:])
-        ):
+        for index, (start, end) in enumerate(group.segments):
             angle = group.angles[index] if index < len(group.angles) else None
             if angle is None:
                 constraint = "free"
@@ -1183,9 +1718,7 @@ class LandmarkEditor(QMainWindow):
                 constraint = f"{angle:+g}° turn"
             self.segment_list.addItem(f"{start} → {end}: {constraint}")
         if self.segment_list.count():
-            selected_row = max(
-                0, min(selected_row, self.segment_list.count() - 1)
-            )
+            selected_row = max(0, min(selected_row, self.segment_list.count() - 1))
             self.segment_list.setCurrentRow(selected_row)
 
     def _selected_group_name(self) -> str | None:
@@ -1203,7 +1736,8 @@ class LandmarkEditor(QMainWindow):
         self.group_list.clear()
         for group in self.groups.values():
             self.group_list.addItem(
-                f"{group.name}: {' - '.join(group.landmarks)}"
+                f"{group.name}: "
+                + ", ".join(f"{start} → {end}" for start, end in group.segments)
             )
             self.group_list.item(self.group_list.count() - 1).setData(
                 Qt.UserRole, group.name
@@ -1220,6 +1754,8 @@ class LandmarkEditor(QMainWindow):
     def _sync_canvas_data(self):
         self.canvas.landmarks = self.landmarks
         self.canvas.groups = self.groups
+        self.canvas.main_axis = self.main_axis
+        self.canvas.pending_axis_points = self.pending_axis_points
 
     def save_toml(self):
         if self.image_path is None:
@@ -1245,7 +1781,11 @@ class LandmarkEditor(QMainWindow):
         try:
             output_path.write_text(
                 serialize_toml(
-                    self.image_path, self.landmarks, self.groups
+                    self.image_path,
+                    self.landmarks,
+                    self.groups,
+                    self.main_axis,
+                    self.image_rotation,
                 ),
                 encoding="utf-8",
             )
