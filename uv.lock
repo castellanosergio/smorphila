@@ -1,6 +1,6 @@
 version = 1
 revision = 3
-requires-python = ">=3.12"
+requires-python = ">=3.12, <3.15"
 resolution-markers = [
     "sys_platform == 'darwin'",
     "platform_machine == 'aarch64' and sys_platform == 'linux'",
@@ -135,6 +135,6 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "numpy", specifier = ">=2.2.5" },
-    { name = "opencv-python", specifier = ">=4.11.0.86" },
+    { name = "opencv-python", specifier = ">=4.11.0.86,<5" },
     { name = "pyside6", specifier = ">=6.9.0" },
 ]
