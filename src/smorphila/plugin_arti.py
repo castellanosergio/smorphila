@@ -26,8 +26,13 @@ class ArtiPlugin:
         # print("LANDMARKS", self.viewer.landmarks)
         for gruppo in LD_groups:
             # print("GRUPPO FUNZIONALE", gruppo)
-            landmark_names = self.viewer.landmarks_groups[gruppo]["landmarks"]
-            angoli = self.viewer.landmarks_groups[gruppo]["angles"]
+            group_data = self.viewer.landmarks_groups[gruppo]
+            segments = group_data.get("segments")
+            if segments is not None:
+                self._draw_segment_group(segments)
+                continue
+            landmark_names = group_data["landmarks"]
+            angoli = group_data["angles"]
             nuova_spezzata = []
             if len(angoli) > 0:
                 print(landmark_names, angoli)
@@ -54,6 +59,26 @@ class ArtiPlugin:
                 self.viewer.layer_manager.draw_lines("spezzata_idealizzata", nuova_spezzata, color=QColor(0, 255, 0, 180))
             else:
                 self.viewer.layer_manager.draw_lines("spezzata_idealizzata", punti, color=QColor(0, 255, 0, 180))
+
+    def _draw_segment_group(self, segments):
+        """Draw a group stored as independent oriented landmark segments."""
+        for segment in segments:
+            if not isinstance(segment, (list, tuple)) or len(segment) != 2:
+                continue
+            try:
+                points = self.get_landmark_points_by_names(
+                    self.viewer.landmarks, list(segment)
+                )
+            except ValueError as error:
+                print("Error:", error)
+                continue
+            qpoints = [QPointF(point[0], point[1]) for point in points]
+            self.viewer.layer_manager.draw_points(
+                "spezzata_idealizzata", qpoints, color=QColor(255, 0, 0, 180)
+            )
+            self.viewer.layer_manager.draw_lines(
+                "spezzata_idealizzata", points, color=QColor(0, 255, 0, 180)
+            )
 
     def get_landmark_points_by_names(self, landmark_dict: dict, names: list[str]) -> list[tuple]:
         missing = [name for name in names if name not in landmark_dict]

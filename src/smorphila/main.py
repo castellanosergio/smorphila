@@ -5,6 +5,7 @@ main program of smorphila package
 import json
 import pathlib as pl
 import sys
+import tomllib
 
 from PySide6.QtCore import QEvent, QPoint, QPointF, QRect, Qt, QTimer
 from PySide6.QtGui import QAction, QCursor, QKeySequence, QPixmap, QShortcut, QTransform
@@ -25,7 +26,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from . import save_data, settings_landmarks
+from . import save_data
 from .image_aligner import ImageAligner
 from .inserisci_landmarks import LandmarkPlugin
 from .layer_manager import LayerManager
@@ -249,12 +250,10 @@ class ImageViewer(QMainWindow):
         self.code = ""
         self.mass_value = 0.0
 
-        self.landmark_names = settings_landmarks.landmark_names
-
-        self.landmarks_groups = settings_landmarks.landmarks_groups
-
-        self.semilandmarks = settings_landmarks.semilandmarks
-        print(self.semilandmarks)
+        self.landmark_names = []
+        self.landmarks_groups = {}
+        self.main_axis = None
+        self.semilandmarks = {}
         self.landmarks = self.init_landmarks(self.landmark_names)
 
         self.scale_factor = 1
@@ -329,6 +328,10 @@ class ImageViewer(QMainWindow):
         open_action = QAction("Open image", self)
         open_action.triggered.connect(self.load)
         file_menu.addAction(open_action)
+
+        load_project_action = QAction("Load project", self)
+        load_project_action.triggered.connect(self.load_project)
+        file_menu.addAction(load_project_action)
 
         toggle_layer_action = QAction("Show/Hide landmarks", self)
         toggle_layer_action.triggered.connect(
@@ -463,6 +466,101 @@ class ImageViewer(QMainWindow):
         self.set_view_rect(new_rect)
         self.layer_manager.update_display()
 
+    @staticmethod
+    def _read_project(project_path):
+        """Read a landmark-editor TOML project into viewer structures."""
+        try:
+            data = tomllib.loads(project_path.read_text(encoding="utf-8"))
+        except (OSError, tomllib.TOMLDecodeError) as error:
+            raise ValueError(f"Could not read project: {error}") from error
+        names = data.get("landmark_names", [])
+        if not isinstance(names, list) or not all(isinstance(name, str) for name in names):
+            raise ValueError("landmark_names must be an array of strings")
+        positions = data.get("landmark_positions", {})
+        if not isinstance(positions, dict):
+            raise ValueError("landmark_positions must be a table")
+        landmarks = {name: {"coordinates": [], "color": None} for name in names}
+        for name, position in positions.items():
+            if name not in landmarks:
+                landmarks[name] = {"coordinates": [], "color": None}
+            coordinates = position.get("coordinates") if isinstance(position, dict) else None
+            if coordinates is None:
+                continue
+            if not isinstance(coordinates, list) or len(coordinates) != 2 or not all(
+                isinstance(value, (int, float)) for value in coordinates
+            ):
+                raise ValueError(f"Coordinates for landmark '{name}' must contain two numbers")
+            landmarks[name]["coordinates"] = coordinates
+        groups_data = data.get("landmarks_groups", {})
+        if not isinstance(groups_data, dict):
+            raise ValueError("landmarks_groups must be a table")
+        groups = {}
+        for group_name, group_data in groups_data.items():
+            if not isinstance(group_data, dict):
+                raise ValueError(f"Group '{group_name}' must be a table")
+            segments = group_data.get("segments")
+            if segments is None:
+                legacy = group_data.get("landmarks", [])
+                if not isinstance(legacy, list) or not all(
+                    isinstance(name, str) for name in legacy
+                ):
+                    raise ValueError(
+                        f"Landmarks for group '{group_name}' must be strings"
+                    )
+                segments = [list(pair) for pair in zip(legacy, legacy[1:])]
+            if not isinstance(segments, list):
+                raise ValueError(f"Segments for group '{group_name}' must be an array")
+            normalized = []
+            for segment in segments:
+                if not isinstance(segment, list) or len(segment) != 2 or not all(
+                    isinstance(name, str) for name in segment
+                ):
+                    raise ValueError(
+                        f"Each segment in group '{group_name}' must contain two landmarks"
+                    )
+                normalized.append(segment)
+            groups[group_name] = {
+                "segments": normalized,
+                "angles": group_data.get("angles", []),
+            }
+        ordered_names = names + [name for name in landmarks if name not in names]
+        return (
+            ordered_names,
+            landmarks,
+            groups,
+            data.get("image_rotation", 0),
+            data.get("main_axis"),
+        )
+
+    def load_project(self):
+        project_name, _ = QFileDialog.getOpenFileName(
+            self, "Load project", "", "Projects (*.toml);;All files (*)"
+        )
+        if not project_name:
+            return
+        project_path = pl.Path(project_name)
+        try:
+            (
+                names,
+                landmarks,
+                groups,
+                rotation,
+                main_axis,
+            ) = self._read_project(project_path)
+            rotation = float(rotation)
+        except (TypeError, ValueError) as error:
+            QMessageBox.critical(self, "Load project", str(error))
+            return
+        self.landmark_names = names
+        self.landmarks_groups = groups
+        self.main_axis = main_axis
+        self.landmarks = landmarks
+        self.landmark_combo.clear()
+        self.landmark_combo.addItems(self.landmark_names)
+        self.project_path = project_path
+        self.layer_manager.update_display()
+        self.status_bar.showMessage(f"Project loaded: {project_path.name}")
+
     def load(self):
         file_path, _ = QFileDialog.getOpenFileName(
             self,
@@ -539,7 +637,7 @@ class ImageViewer(QMainWindow):
     def load_image(self, file_name):
         self.reset_all()
         self.pixmap = QPixmap()
-        self.pixmap.load(file_name)
+        self.pixmap.load(str(file_name))
 
         self.view_rect = QRect(0, 0, self.pixmap.width(), self.pixmap.height())
         mode = self.scaling_mode.currentText()
