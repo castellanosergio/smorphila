@@ -28,7 +28,7 @@ from PySide6.QtWidgets import (
 
 from . import save_data
 from .image_aligner import ImageAligner
-from .inserisci_landmarks import LandmarkPlugin
+from .insert_landmarks import LandmarkPlugin
 from .layer_manager import LayerManager
 from .plugin_allinea_spezzata import SpezzataAligner
 from .plugin_arti import ArtiPlugin
@@ -50,7 +50,7 @@ class ClickableLabel(QLabel):
 
     def enterEvent(self, event):
         if (
-            self.viewer.inserisci_landmarks.active
+            self.viewer.insert_landmarks.active
             or self.viewer.spezzata_curva.active
             or self.viewer.calibrazione.active
         ):
@@ -74,11 +74,11 @@ class ClickableLabel(QLabel):
             self.viewer.image_aligner.handle_click(mapped)
             return
 
-        elif self.viewer.inserisci_landmarks.active:
+        elif self.viewer.insert_landmarks.active:
             mapped = self.map_to_pixmap_coordinates(event.position())
             name = self.viewer.landmark_combo.currentText()
 
-            self.viewer.inserisci_landmarks.handle_click(name, mapped)
+            self.viewer.insert_landmarks.handle_click(name, mapped)
             self.viewer.setCursor(Qt.CrossCursor)
 
         elif self.viewer.spezzata_plugin.active:
@@ -126,10 +126,7 @@ class ClickableLabel(QLabel):
         elif not self.viewer.selection_mode and event.buttons() == Qt.LeftButton:
             print(f"{self.viewer.selection_mode=}")
 
-            if (
-                self.viewer.inserisci_landmarks.active
-                or self.viewer.spezzata_curva.active
-            ):
+            if self.viewer.insert_landmarks.active or self.viewer.spezzata_curva.active:
                 print("RETURN")
                 return
 
@@ -342,7 +339,7 @@ class ImageViewer(QMainWindow):
         # Plugins: layer manager and tools
         self.layer_manager = LayerManager(self)
         self.spezzata_plugin = SpezzataAligner(self)
-        self.inserisci_landmarks = LandmarkPlugin(self)
+        self.insert_landmarks = LandmarkPlugin(self)
         self.image_aligner = ImageAligner(self)
         self.rileva_contorno = ContourPlugin(self)
         self.spezzata_curva = SpezzataCurva(self)
@@ -361,7 +358,7 @@ class ImageViewer(QMainWindow):
 
         # Add plugin to the Landmarks menu
         landmarks_action = QAction("Add landmarks (CTRL+L)", self)
-        landmarks_action.triggered.connect(self.inserisci_landmarks.activate)
+        landmarks_action.triggered.connect(self.insert_landmarks.activate)
         landmarks_menu.addAction(landmarks_action)
 
         # Add plugin to the Landmarks menu
@@ -398,7 +395,7 @@ class ImageViewer(QMainWindow):
 
         # Ctrl+L -> activate landmarks
         shortcut_landmark = QShortcut(QKeySequence("Ctrl+L"), self)
-        shortcut_landmark.activated.connect(self.inserisci_landmarks.activate)
+        shortcut_landmark.activated.connect(self.insert_landmarks.activate)
 
         # Ctrl+S -> activate landmarks
         shortcut_landmark = QShortcut(QKeySequence("Ctrl+S"), self)
@@ -474,7 +471,9 @@ class ImageViewer(QMainWindow):
         except (OSError, tomllib.TOMLDecodeError) as error:
             raise ValueError(f"Could not read project: {error}") from error
         names = data.get("landmark_names", [])
-        if not isinstance(names, list) or not all(isinstance(name, str) for name in names):
+        if not isinstance(names, list) or not all(
+            isinstance(name, str) for name in names
+        ):
             raise ValueError("landmark_names must be an array of strings")
         positions = data.get("landmark_positions", {})
         if not isinstance(positions, dict):
@@ -483,13 +482,19 @@ class ImageViewer(QMainWindow):
         for name, position in positions.items():
             if name not in landmarks:
                 landmarks[name] = {"coordinates": [], "color": None}
-            coordinates = position.get("coordinates") if isinstance(position, dict) else None
+            coordinates = (
+                position.get("coordinates") if isinstance(position, dict) else None
+            )
             if coordinates is None:
                 continue
-            if not isinstance(coordinates, list) or len(coordinates) != 2 or not all(
-                isinstance(value, (int, float)) for value in coordinates
+            if (
+                not isinstance(coordinates, list)
+                or len(coordinates) != 2
+                or not all(isinstance(value, (int, float)) for value in coordinates)
             ):
-                raise ValueError(f"Coordinates for landmark '{name}' must contain two numbers")
+                raise ValueError(
+                    f"Coordinates for landmark '{name}' must contain two numbers"
+                )
             landmarks[name]["coordinates"] = coordinates
         groups_data = data.get("landmarks_groups", {})
         if not isinstance(groups_data, dict):
@@ -512,8 +517,10 @@ class ImageViewer(QMainWindow):
                 raise ValueError(f"Segments for group '{group_name}' must be an array")
             normalized = []
             for segment in segments:
-                if not isinstance(segment, list) or len(segment) != 2 or not all(
-                    isinstance(name, str) for name in segment
+                if (
+                    not isinstance(segment, list)
+                    or len(segment) != 2
+                    or not all(isinstance(name, str) for name in segment)
                 ):
                     raise ValueError(
                         f"Each segment in group '{group_name}' must contain two landmarks"
@@ -830,13 +837,13 @@ class ImageViewer(QMainWindow):
     def disattiva_zoom(self):
         self.selection_mode = False
         self.activate_selector_button.setChecked(False)
-        if self.inserisci_landmarks.active or self.spezzata_plugin.active:
+        if self.insert_landmarks.active or self.spezzata_plugin.active:
             self.image.setCursor(Qt.CrossCursor)
 
     def toggle_selection_mode(self):
         self.selection_mode = self.activate_selector_button.isChecked()
         if self.selection_mode:
-            self.inserisci_landmarks.active = False
+            self.insert_landmarks.active = False
             self.spezzata_plugin.active = False
             self.image.setCursor(Qt.CrossCursor)
         else:
@@ -853,7 +860,7 @@ class ImageViewer(QMainWindow):
         QMessageBox.information(self, "Info", "Working in progress")
 
     def disattiva_tutti_i_plugin(self):
-        self.inserisci_landmarks.deactivate()
+        self.insert_landmarks.deactivate()
         self.spezzata_plugin.active = False
         self.spezzata_curva.active = False
         self.image_aligner.active = False

@@ -1,17 +1,18 @@
+from math import atan2, cos, degrees, hypot, pi, sin
+
+import numpy as np
 from PySide6.QtCore import QPointF, Qt
+from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
-    QMessageBox,
-    QDialog,
-    QVBoxLayout,
+    QButtonGroup,
     QComboBox,
+    QDialog,
     QDialogButtonBox,
     QLabel,
-    QButtonGroup,
+    QMessageBox,
     QRadioButton,
+    QVBoxLayout,
 )
-from PySide6.QtGui import QColor
-import numpy as np
-from math import hypot, cos, sin, atan2, pi, degrees
 
 
 class LandmarkSemilandmarkDialog(QDialog):
@@ -84,11 +85,9 @@ class SpezzataCurva:
         self.active = True
         self.viewer.disattiva_zoom()
         self.viewer.selection_mode = False
-        if self.viewer.inserisci_landmarks.active:
-            self.viewer.inserisci_landmarks.deactivate()
-        QMessageBox.information(
-            self.viewer, "Point entry", "Double-click to finish."
-        )
+        if self.viewer.insert_landmarks.active:
+            self.viewer.insert_landmarks.deactivate()
+        QMessageBox.information(self.viewer, "Point entry", "Double-click to finish.")
 
     def handle_click(self, pos: QPointF):
         # converto QPointF in

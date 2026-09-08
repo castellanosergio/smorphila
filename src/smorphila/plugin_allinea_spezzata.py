@@ -1,7 +1,8 @@
-from PySide6.QtCore import QPointF, Qt
-from PySide6.QtWidgets import QMessageBox
-from PySide6.QtGui import QColor
 import math
+
+from PySide6.QtCore import QPointF, Qt
+from PySide6.QtGui import QColor
+from PySide6.QtWidgets import QMessageBox
 
 
 class SpezzataAligner:
@@ -17,8 +18,8 @@ class SpezzataAligner:
         self.viewer.disattiva_zoom()
         self.viewer.image.setCursor(Qt.CrossCursor)
         self.viewer.selection_mode = False
-        if self.viewer.inserisci_landmarks.active:
-            self.viewer.inserisci_landmarks.deactivate()
+        if self.viewer.insert_landmarks.active:
+            self.viewer.insert_landmarks.deactivate()
 
     def handle_click(self, pos: QPointF):
         self.points.append(pos)
@@ -59,7 +60,12 @@ class SpezzataAligner:
         angolo_con_asse = math.atan2(dy, dx)
         direction_angle = self.determina_direzione_allineamento(angolo_con_asse)
 
-        distances = [math.hypot(points[i + 1].x() - points[i].x(), points[i + 1].y() - points[i].y()) for i in range(len(points) - 1)]
+        distances = [
+            math.hypot(
+                points[i + 1].x() - points[i].x(), points[i + 1].y() - points[i].y()
+            )
+            for i in range(len(points) - 1)
+        ]
 
         dx = math.cos(direction_angle)
         dy = math.sin(direction_angle)
@@ -77,7 +83,9 @@ class SpezzataAligner:
     def draw_preview(self):
         """Show the clicked points on the layer in real time."""
         self.viewer.layer_manager.clear_layer("spezzata")
-        self.viewer.layer_manager.draw_points("spezzata", self.points, color=QColor(255, 255, 255, 150))
+        self.viewer.layer_manager.draw_points(
+            "spezzata", self.points, color=QColor(255, 255, 255, 150)
+        )
 
     def draw_on_layer(self):
         """Draw the final polyline on a layer."""
@@ -94,7 +102,11 @@ class SpezzataAligner:
         angolo_normalizzato = angolo_gradi % 360
 
         # Determine the direction according to the defined thresholds
-        if -45 <= angolo_gradi < 45 or angolo_normalizzato < 45 or angolo_normalizzato >= 315:
+        if (
+            -45 <= angolo_gradi < 45
+            or angolo_normalizzato < 45
+            or angolo_normalizzato >= 315
+        ):
             return 0  # Horizontal (east)
         elif 45 <= angolo_normalizzato < 135:
             return math.pi / 2  # Vertical (north)
