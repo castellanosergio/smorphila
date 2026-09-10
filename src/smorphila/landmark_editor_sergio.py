@@ -36,6 +36,7 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QPushButton,
+    QSpinBox,
     QSplitter,
     QStatusBar,
     QVBoxLayout,
@@ -59,6 +60,16 @@ class Landmark:
 
 
 @dataclass
+class CurveDefinition:
+    """A curve defined by two anchor landmarks and a point count."""
+
+    name: str
+    point_count: int
+    start_landmark: str
+    end_landmark: str
+
+
+@dataclass
 class GroupDefinition:
     """A group represented by an ordered list of oriented segments."""
 
@@ -75,11 +86,23 @@ class GroupDefinition:
 
 @dataclass
 class MainAxisDefinition:
-    """An oriented axis stored in original-image coordinates."""
+    """An oriented axis defined by landmark names and its target angle."""
 
-    origin: QPointF
-    destination: QPointF
-    alignment: str = "horizontal"
+    start_landmark: str
+    end_landmark: str
+    angle_from_vertical: float = 0
+
+
+def axis_landmark_points(
+    axis: MainAxisDefinition, landmarks: dict[str, Landmark]
+) -> tuple[QPointF, QPointF] | None:
+    """Return the current points for an axis when both anchors are placed."""
+
+    start = landmarks.get(axis.start_landmark)
+    end = landmarks.get(axis.end_landmark)
+    if start is None or end is None or not start.is_placed or not end.is_placed:
+        return None
+    return QPointF(start.x, start.y), QPointF(end.x, end.y)
 
 
 def normalize_rotation(angle: float) -> float:
@@ -90,16 +113,17 @@ def normalize_rotation(angle: float) -> float:
 
 
 def proposed_axis_rotation(
-    axis: MainAxisDefinition, current_rotation: float = 0
+    axis: MainAxisDefinition,
+    landmarks: dict[str, Landmark],
+    current_rotation: float = 0,
 ) -> float:
     """Return the rotation needed to align the displayed main axis."""
 
-    dx = axis.destination.x() - axis.origin.x()
-    dy = axis.destination.y() - axis.origin.y()
-    if dx == 0 and dy == 0:
+    points = axis_landmark_points(axis, landmarks)
+    if points is None or points[0] == points[1]:
         raise ValueError("The main axis points must be distinct")
-    current_heading = math.degrees(math.atan2(dy, dx)) + current_rotation
-    target_heading = 0 if axis.alignment == "horizontal" else 90
+    current_heading = trigonometric_heading(*points) + current_rotation
+    target_heading = 90 + axis.angle_from_vertical
     return normalize_rotation(target_heading - current_heading)
 
 
@@ -112,12 +136,16 @@ def trigonometric_heading(start: QPointF, end: QPointF) -> float:
 
 
 def angle_from_axis(
-    start: QPointF, end: QPointF, axis: MainAxisDefinition | None
+    start: QPointF,
+    end: QPointF,
+    axis: MainAxisDefinition | None,
+    landmarks: dict[str, Landmark],
 ) -> float:
     """Return a segment angle relative to the oriented main axis."""
 
     segment_heading = trigonometric_heading(start, end)
-    axis_heading = trigonometric_heading(axis.origin, axis.destination) if axis else 0.0
+    axis_points = axis_landmark_points(axis, landmarks) if axis else None
+    axis_heading = trigonometric_heading(*axis_points) if axis_points else 0.0
     return normalize_rotation(segment_heading - axis_heading)
 
 
@@ -132,6 +160,8 @@ def angle_choices(step: int) -> list[int]:
 def validate_definitions(
     landmarks: dict[str, Landmark],
     groups: dict[str, GroupDefinition],
+    curves: dict[str, CurveDefinition] | None = None,
+    main_axis: MainAxisDefinition | None = None,
 ) -> list[str]:
     """Return all errors that would make the configuration invalid."""
 
@@ -161,6 +191,36 @@ def validate_definitions(
                 errors.append(
                     f"Group '{group.name}' contains an angle outside -180..180."
                 )
+
+    for curve in (curves or {}).values():
+        if (
+            isinstance(curve.point_count, bool)
+            or not isinstance(curve.point_count, int)
+            or curve.point_count < 2
+        ):
+            errors.append(f"Curve '{curve.name}' must contain at least two points.")
+        if curve.start_landmark == curve.end_landmark:
+            errors.append(f"Curve '{curve.name}' must use two different anchors.")
+        for landmark_name in (curve.start_landmark, curve.end_landmark):
+            if landmark_name not in landmarks:
+                errors.append(
+                    f"Curve '{curve.name}' references unknown landmark "
+                    f"'{landmark_name}'."
+                )
+
+    if main_axis is not None:
+        if main_axis.start_landmark == main_axis.end_landmark:
+            errors.append("The main axis must use two different landmarks.")
+        for landmark_name in (
+            main_axis.start_landmark,
+            main_axis.end_landmark,
+        ):
+            if landmark_name not in landmarks:
+                errors.append(
+                    f"The main axis references unknown landmark '{landmark_name}'."
+                )
+        if main_axis.angle_from_vertical < -180 or main_axis.angle_from_vertical > 180:
+            errors.append("The main axis angle must be within -180..180.")
 
     return errors
 
@@ -194,13 +254,12 @@ def serialize_toml(
     landmarks: dict[str, Landmark],
     groups: dict[str, GroupDefinition],
     main_axis: MainAxisDefinition | None = None,
-    image_rotation: float = 0,
+    curves: dict[str, CurveDefinition] | None = None,
 ) -> str:
     """Serialize editor data without requiring an additional TOML package."""
 
     lines = [
         f"source_image = {_toml_string(str(image_path))}",
-        f"image_rotation = {image_rotation:.10g}",
         f"landmark_names = {_toml_array(list(landmarks))}",
     ]
 
@@ -209,20 +268,9 @@ def serialize_toml(
             [
                 "",
                 "[main_axis]",
-                f"origin = [{main_axis.origin.x():.10g}, {main_axis.origin.y():.10g}]",
-                "destination = "
-                f"[{main_axis.destination.x():.10g}, "
-                f"{main_axis.destination.y():.10g}]",
-                f"alignment = {_toml_string(main_axis.alignment)}",
-            ]
-        )
-
-    for landmark in landmarks.values():
-        lines.extend(
-            [
-                "",
-                f"[landmark_positions.{_toml_string(landmark.name)}]",
-                f"coordinates = [{landmark.x:.10g}, {landmark.y:.10g}]",
+                "landmarks = "
+                f"{_toml_array([main_axis.start_landmark, main_axis.end_landmark])}",
+                f"angle_from_vertical = {main_axis.angle_from_vertical:.10g}",
             ]
         )
 
@@ -233,6 +281,17 @@ def serialize_toml(
                 f"[landmarks_groups.{_toml_string(group.name)}]",
                 f"segments = {_toml_segments(group.segments)}",
                 f"angles = {_toml_angle_array(group.angles)}",
+            ]
+        )
+
+    for curve in (curves or {}).values():
+        lines.extend(
+            [
+                "",
+                f"[curves.{_toml_string(curve.name)}]",
+                f"point_count = {curve.point_count}",
+                f"start_landmark = {_toml_string(curve.start_landmark)}",
+                f"end_landmark = {_toml_string(curve.end_landmark)}",
             ]
         )
 
@@ -293,6 +352,7 @@ def deserialize_toml(
 ) -> tuple[
     dict[str, Landmark],
     dict[str, GroupDefinition],
+    dict[str, CurveDefinition],
     MainAxisDefinition | None,
     float,
     list[str],
@@ -367,32 +427,115 @@ def deserialize_toml(
         angles = _deserialize_angles(group_data.get("angles", []), name, len(segments))
         groups[name] = GroupDefinition(name, segments, angles)
 
+    curves_data = data.get("curves", {})
+    if not isinstance(curves_data, dict):
+        raise ValueError("curves must be a table")
+    curves = {}
+    for name, curve_data in curves_data.items():
+        if not isinstance(curve_data, dict):
+            raise ValueError(f"Curve '{name}' must be a table")
+        point_count = curve_data.get("point_count")
+        if isinstance(point_count, bool) or not isinstance(point_count, int):
+            raise ValueError(f"Point count for curve '{name}' must be an integer")
+        if point_count < 2:
+            raise ValueError(f"Curve '{name}' must contain at least two points")
+        start_landmark = curve_data.get("start_landmark")
+        end_landmark = curve_data.get("end_landmark")
+        if not isinstance(start_landmark, str) or not isinstance(end_landmark, str):
+            raise ValueError(f"Curve '{name}' anchors must be landmark names")
+        if start_landmark == end_landmark:
+            raise ValueError(f"Curve '{name}' must use two different anchors")
+        unknown = [
+            landmark_name
+            for landmark_name in (start_landmark, end_landmark)
+            if landmark_name not in landmarks
+        ]
+        if unknown:
+            raise ValueError(
+                f"Curve '{name}' references unknown landmarks: {', '.join(unknown)}"
+            )
+        curves[name] = CurveDefinition(
+            name, point_count, start_landmark, end_landmark
+        )
+
     image_rotation = normalize_rotation(
         _number(data.get("image_rotation", 0), "image_rotation")
     )
     axis_data = data.get("main_axis")
     main_axis = None
+    warnings = []
     if axis_data is not None:
         if not isinstance(axis_data, dict):
             raise ValueError("main_axis must be a table")
-        origin = _point_from_toml(axis_data.get("origin"), "Main axis origin")
-        destination = _point_from_toml(
-            axis_data.get("destination"), "Main axis destination"
-        )
-        alignment = axis_data.get("alignment", "horizontal")
-        if alignment not in {"horizontal", "vertical"}:
-            raise ValueError("Main axis alignment must be horizontal or vertical")
-        if origin == destination:
-            raise ValueError("The main axis points must be distinct")
-        main_axis = MainAxisDefinition(origin, destination, alignment)
+        axis_landmarks = axis_data.get("landmarks")
+        if (
+            isinstance(axis_landmarks, list)
+            and len(axis_landmarks) == 2
+            and all(isinstance(name, str) for name in axis_landmarks)
+        ):
+            start_landmark, end_landmark = axis_landmarks
+            if start_landmark == end_landmark:
+                raise ValueError("The main axis landmarks must be distinct")
+            unknown = [
+                name for name in axis_landmarks if name not in landmarks
+            ]
+            if unknown:
+                raise ValueError(
+                    "Main axis references unknown landmarks: " + ", ".join(unknown)
+                )
+            angle_from_vertical = _number(
+                axis_data.get("angle_from_vertical", 0),
+                "Main axis angle from vertical",
+            )
+            main_axis = MainAxisDefinition(
+                start_landmark, end_landmark, normalize_rotation(angle_from_vertical)
+            )
+        elif "origin" in axis_data and "destination" in axis_data:
+            origin = _point_from_toml(axis_data["origin"], "Main axis origin")
+            destination = _point_from_toml(
+                axis_data["destination"], "Main axis destination"
+            )
+            start_landmark = next(
+                (
+                    landmark.name
+                    for landmark in landmarks.values()
+                    if landmark.is_placed
+                    and QPointF(landmark.x, landmark.y) == origin
+                ),
+                None,
+            )
+            end_landmark = next(
+                (
+                    landmark.name
+                    for landmark in landmarks.values()
+                    if landmark.is_placed
+                    and QPointF(landmark.x, landmark.y) == destination
+                ),
+                None,
+            )
+            if start_landmark is None or end_landmark is None:
+                warnings.append(
+                    "Legacy main axis was ignored because its coordinates do not "
+                    "match two landmark positions."
+                )
+            else:
+                alignment = axis_data.get("alignment", "vertical")
+                if alignment not in {"horizontal", "vertical"}:
+                    raise ValueError("Main axis alignment must be horizontal or vertical")
+                angle_from_vertical = -90 if alignment == "horizontal" else 0
+                main_axis = MainAxisDefinition(
+                    start_landmark, end_landmark, angle_from_vertical
+                )
+                warnings.append("Legacy main axis was converted to landmark references.")
+        else:
+            raise ValueError("main_axis must define two landmark names")
 
-    warnings = []
     if "angles" in data:
         warnings.append(
             "Legacy vertex-first angle tables were ignored because they cannot be "
             "converted to oriented segment constraints."
         )
-    return landmarks, groups, main_axis, image_rotation, warnings
+    return landmarks, groups, curves, main_axis, image_rotation, warnings
 
 
 class AngleWheel(QWidget):
@@ -921,8 +1064,12 @@ class ImageCanvas(QWidget):
         if self.main_axis is None:
             self._draw_pending_axis_origin(painter)
             return
-        origin = self.image_to_widget(self.main_axis.origin)
-        destination = self.image_to_widget(self.main_axis.destination)
+        points = axis_landmark_points(self.main_axis, self.landmarks)
+        if points is None:
+            self._draw_pending_axis_origin(painter)
+            return
+        origin = self.image_to_widget(points[0])
+        destination = self.image_to_widget(points[1])
         painter.setPen(QPen(QColor("#ff40d7"), 4))
         painter.drawLine(origin, destination)
         self._draw_arrow_head(painter, origin, destination)
@@ -967,6 +1114,7 @@ class LandmarkEditor(QMainWindow):
         self.output_path: pl.Path | None = None
         self.landmarks: dict[str, Landmark] = {}
         self.groups: dict[str, GroupDefinition] = {}
+        self.curves: dict[str, CurveDefinition] = {}
         self.main_axis: MainAxisDefinition | None = None
         self.image_rotation = 0.0
         self.mode = "idle"
@@ -995,6 +1143,7 @@ class LandmarkEditor(QMainWindow):
         editor_layout = QVBoxLayout(editor_panel)
         editor_layout.addWidget(self._build_landmark_group())
         editor_layout.addWidget(self._build_group_section())
+        editor_layout.addWidget(self._build_curve_section())
         editor_layout.addStretch()
         editor_panel.setMinimumWidth(340)
 
@@ -1087,6 +1236,37 @@ class LandmarkEditor(QMainWindow):
         self.delete_group_button.clicked.connect(self._delete_group)
         return group
 
+    def _build_curve_section(self) -> QGroupBox:
+        group = QGroupBox("Curves")
+        layout = QVBoxLayout(group)
+        form = QFormLayout()
+        self.curve_name_edit = QLineEdit()
+        self.curve_name_edit.setPlaceholderText("Unique curve name")
+        self.curve_point_count_spin = QSpinBox()
+        self.curve_point_count_spin.setRange(2, 10000)
+        self.curve_point_count_spin.setValue(8)
+        self.curve_start_combo = QComboBox()
+        self.curve_end_combo = QComboBox()
+        form.addRow("Name:", self.curve_name_edit)
+        form.addRow("Points:", self.curve_point_count_spin)
+        form.addRow("Start anchor:", self.curve_start_combo)
+        form.addRow("End anchor:", self.curve_end_combo)
+        layout.addLayout(form)
+
+        buttons = QHBoxLayout()
+        self.add_curve_button = QPushButton("Add curve")
+        self.delete_curve_button = QPushButton("Delete selected")
+        buttons.addWidget(self.add_curve_button)
+        buttons.addWidget(self.delete_curve_button)
+        layout.addLayout(buttons)
+
+        self.curve_list = QListWidget()
+        self.curve_list.setMinimumHeight(100)
+        layout.addWidget(self.curve_list)
+        self.add_curve_button.clicked.connect(self._add_curve)
+        self.delete_curve_button.clicked.connect(self._delete_curve)
+        return group
+
     def _build_menu(self):
         file_menu = self.menuBar().addMenu("File")
         open_action = QAction("Open image...", self)
@@ -1151,6 +1331,13 @@ class LandmarkEditor(QMainWindow):
             self.cancel_group_button,
             self.delete_group_button,
             self.group_list,
+            self.curve_name_edit,
+            self.curve_point_count_spin,
+            self.curve_start_combo,
+            self.curve_end_combo,
+            self.add_curve_button,
+            self.delete_curve_button,
+            self.curve_list,
         ):
             widget.setEnabled(enabled)
         for action in (
@@ -1190,6 +1377,7 @@ class LandmarkEditor(QMainWindow):
         self.output_path = None
         self.landmarks = {}
         self.groups = {}
+        self.curves = {}
         self.main_axis = None
         self.image_rotation = 0.0
         self.mode = "idle"
@@ -1205,6 +1393,7 @@ class LandmarkEditor(QMainWindow):
                 (
                     self.landmarks,
                     self.groups,
+                    self.curves,
                     self.main_axis,
                     self.image_rotation,
                     warnings,
@@ -1312,6 +1501,16 @@ class LandmarkEditor(QMainWindow):
                 tuple(new_name if name == old_name else name for name in segment)
                 for segment in group.segments
             ]
+        for curve in self.curves.values():
+            if curve.start_landmark == old_name:
+                curve.start_landmark = new_name
+            if curve.end_landmark == old_name:
+                curve.end_landmark = new_name
+        if self.main_axis is not None:
+            if self.main_axis.start_landmark == old_name:
+                self.main_axis.start_landmark = new_name
+            if self.main_axis.end_landmark == old_name:
+                self.main_axis.end_landmark = new_name
         self._sync_canvas_data()
         self.landmark_name_edit.clear()
         self._refresh_lists()
@@ -1324,20 +1523,26 @@ class LandmarkEditor(QMainWindow):
             QMessageBox.warning(self, "Landmark", "Select a landmark first.")
             return
         references = [
-            group.name
+            f"group '{group.name}'"
             for group in self.groups.values()
             if any(name in segment for segment in group.segments)
         ]
+        references.extend(
+            f"curve '{curve.name}'"
+            for curve in self.curves.values()
+            if name in (curve.start_landmark, curve.end_landmark)
+        )
         landmark = self.landmarks[name]
-        if self.main_axis is not None and landmark.is_placed:
-            point = QPointF(landmark.x, landmark.y)
-            if point in (self.main_axis.origin, self.main_axis.destination):
-                references.append("Antero-posterior axis")
+        if self.main_axis is not None and name in (
+            self.main_axis.start_landmark,
+            self.main_axis.end_landmark,
+        ):
+            references.append("the antero-posterior axis")
         if references:
             QMessageBox.warning(
                 self,
                 "Landmark",
-                "Delete the following group definitions first: "
+                "Delete the following definitions first: "
                 + ", ".join(references),
             )
             return
@@ -1400,9 +1605,12 @@ class LandmarkEditor(QMainWindow):
         if self.canvas.main_axis is None:
             return 0.0
         axis = self.canvas.main_axis
+        points = axis_landmark_points(axis, self.landmarks)
+        if points is None:
+            return 0.0
         return trigonometric_heading(
-            self.canvas.image_to_widget(axis.origin),
-            self.canvas.image_to_widget(axis.destination),
+            self.canvas.image_to_widget(points[0]),
+            self.canvas.image_to_widget(points[1]),
         )
 
     @staticmethod
@@ -1603,14 +1811,12 @@ class LandmarkEditor(QMainWindow):
                 self._cancel_definition()
                 return
             self.main_axis = MainAxisDefinition(
-                origin,
-                image_point,
-                dialog.alignment,
+                self.pending_axis_landmark,
+                landmark_name,
+                -90 if dialog.alignment == "horizontal" else 0,
             )
             self.canvas.main_axis = self.main_axis
-            rotation = proposed_axis_rotation(self.main_axis, self.image_rotation)
-            self.image_rotation = normalize_rotation(self.image_rotation + rotation)
-            self.canvas.set_rotation(self.image_rotation)
+            self._align_main_axis()
             self.pending_axis_points.clear()
             self.pending_axis_landmark = None
             self.mode = "idle"
@@ -1627,6 +1833,11 @@ class LandmarkEditor(QMainWindow):
             landmark = self.landmarks[name]
             landmark.x = image_point.x()
             landmark.y = image_point.y()
+            if self.main_axis is not None and name in (
+                self.main_axis.start_landmark,
+                self.main_axis.end_landmark,
+            ):
+                self._align_main_axis()
             self.mode = "idle"
             self.dirty = True
             self._refresh_landmarks()
@@ -1669,7 +1880,35 @@ class LandmarkEditor(QMainWindow):
             )
         if selected_name:
             self._select_landmark_by_name(selected_name)
+        self._refresh_curve_landmark_choices()
         self.canvas.update()
+
+    def _align_main_axis(self):
+        """Rotate the image when both main-axis landmarks are placed."""
+
+        if self.main_axis is None:
+            return
+        try:
+            rotation = proposed_axis_rotation(
+                self.main_axis, self.landmarks, self.image_rotation
+            )
+        except ValueError:
+            return
+        self.image_rotation = normalize_rotation(self.image_rotation + rotation)
+        self.canvas.set_rotation(self.image_rotation)
+
+    def _refresh_curve_landmark_choices(self):
+        selected_start = self.curve_start_combo.currentText()
+        selected_end = self.curve_end_combo.currentText()
+        landmark_names = list(self.landmarks)
+        for combo, selected_name in (
+            (self.curve_start_combo, selected_start),
+            (self.curve_end_combo, selected_end),
+        ):
+            combo.clear()
+            combo.addItems(landmark_names)
+            if selected_name in landmark_names:
+                combo.setCurrentText(selected_name)
 
     def _selected_group_name(self) -> str | None:
         item = self.group_list.currentItem()
@@ -1700,9 +1939,69 @@ class LandmarkEditor(QMainWindow):
         if selected_name:
             self._select_group_by_name(selected_name)
 
+    def _selected_curve_name(self) -> str | None:
+        item = self.curve_list.currentItem()
+        name = item.data(Qt.UserRole) if item else None
+        return name if name in self.curves else None
+
+    def _select_curve_by_name(self, name: str):
+        for row in range(self.curve_list.count()):
+            if self.curve_list.item(row).data(Qt.UserRole) == name:
+                self.curve_list.setCurrentRow(row)
+                return
+
+    def _refresh_curves(self):
+        selected_name = self._selected_curve_name()
+        self.curve_list.clear()
+        for curve in self.curves.values():
+            self.curve_list.addItem(
+                f"{curve.name}: {curve.start_landmark} to {curve.end_landmark} "
+                f"({curve.point_count} points)"
+            )
+            self.curve_list.item(self.curve_list.count() - 1).setData(
+                Qt.UserRole, curve.name
+            )
+        if selected_name:
+            self._select_curve_by_name(selected_name)
+
+    def _add_curve(self):
+        name = self._clean_name(self.curve_name_edit, "Curve", self.curves)
+        if name is None:
+            return
+        start_landmark = self.curve_start_combo.currentText()
+        end_landmark = self.curve_end_combo.currentText()
+        if not start_landmark or not end_landmark:
+            QMessageBox.warning(self, "Curve", "Add two landmarks before defining a curve.")
+            return
+        if start_landmark == end_landmark:
+            QMessageBox.warning(self, "Curve", "Select two different anchor landmarks.")
+            return
+        self.curves[name] = CurveDefinition(
+            name,
+            self.curve_point_count_spin.value(),
+            start_landmark,
+            end_landmark,
+        )
+        self.curve_name_edit.clear()
+        self._refresh_curves()
+        self._select_curve_by_name(name)
+        self.dirty = True
+        self.status_bar.showMessage(f"Curve '{name}' created.")
+
+    def _delete_curve(self):
+        name = self._selected_curve_name()
+        if name is None:
+            QMessageBox.warning(self, "Curve", "Select a curve first.")
+            return
+        del self.curves[name]
+        self._refresh_curves()
+        self.dirty = True
+        self.status_bar.showMessage(f"Curve '{name}' deleted.")
+
     def _refresh_lists(self):
         self._refresh_landmarks()
         self._refresh_groups()
+        self._refresh_curves()
         self.canvas.update()
 
     def _sync_canvas_data(self):
@@ -1715,7 +2014,9 @@ class LandmarkEditor(QMainWindow):
         if self.image_path is None:
             QMessageBox.warning(self, "Save TOML", "Open an image first.")
             return
-        errors = validate_definitions(self.landmarks, self.groups)
+        errors = validate_definitions(
+            self.landmarks, self.groups, self.curves, self.main_axis
+        )
         if errors:
             QMessageBox.warning(self, "Save TOML", "\n".join(errors))
             return
@@ -1739,7 +2040,7 @@ class LandmarkEditor(QMainWindow):
                     self.landmarks,
                     self.groups,
                     self.main_axis,
-                    self.image_rotation,
+                    self.curves,
                 ),
                 encoding="utf-8",
             )
