@@ -44,6 +44,7 @@ from PySide6.QtWidgets import (
 )
 
 IMAGE_FILTER = "Images (*.jpg *.JPG *.jpeg *.JPEG *.png *.PNG);;All files (*)"
+ANGLE_SELECTION_STEP = 10
 
 
 @dataclass
@@ -76,6 +77,7 @@ class GroupDefinition:
     name: str
     segments: list[tuple[str, str]]
     angles: list[float | None] = field(default_factory=list)
+    reference_points: dict[str, tuple[float, float]] = field(default_factory=dict)
 
     def __post_init__(self):
         # Accept the former landmark-chain constructor while reading old data.
@@ -1219,12 +1221,14 @@ class LandmarkEditor(QMainWindow):
         buttons.addWidget(self.cancel_group_button)
         buttons.addWidget(self.delete_group_button)
         layout.addLayout(buttons)
-        step_layout = QHBoxLayout()
-        step_layout.addWidget(QLabel("Angle step:"))
-        self.angle_step_combo = QComboBox()
-        self.angle_step_combo.addItems(["10°", "20°"])
-        step_layout.addWidget(self.angle_step_combo)
-        layout.addLayout(step_layout)
+        rotation_layout = QHBoxLayout()
+        rotation_layout.addWidget(QLabel("Group rotation (°):"))
+        self.group_rotation_edit = QLineEdit()
+        self.group_rotation_edit.setPlaceholderText("Positive: counterclockwise")
+        self.rotate_group_button = QPushButton("Rotate selected group")
+        rotation_layout.addWidget(self.group_rotation_edit)
+        rotation_layout.addWidget(self.rotate_group_button)
+        layout.addLayout(rotation_layout)
         self.group_list = QListWidget()
         self.group_list.setMinimumHeight(100)
         layout.addWidget(self.group_list)
@@ -1234,6 +1238,7 @@ class LandmarkEditor(QMainWindow):
         self.add_segment_button.clicked.connect(self._start_add_segment)
         self.cancel_group_button.clicked.connect(self._cancel_definition)
         self.delete_group_button.clicked.connect(self._delete_group)
+        self.rotate_group_button.clicked.connect(self._rotate_selected_group)
         return group
 
     def _build_curve_section(self) -> QGroupBox:
@@ -1324,12 +1329,13 @@ class LandmarkEditor(QMainWindow):
             self.rename_landmark_button,
             self.delete_landmark_button,
             self.landmark_list,
-            self.angle_step_combo,
             self.group_name_edit,
             self.define_group_button,
             self.add_segment_button,
             self.cancel_group_button,
             self.delete_group_button,
+            self.group_rotation_edit,
+            self.rotate_group_button,
             self.group_list,
             self.curve_name_edit,
             self.curve_point_count_spin,
@@ -1626,28 +1632,66 @@ class LandmarkEditor(QMainWindow):
         if group.angles and all(angle is None for angle in group.angles):
             group.angles.clear()
 
+    def _capture_reference_points(
+        self, group: GroupDefinition, *landmark_names: str
+    ):
+        """Store landmark positions before a group rotation can move them."""
+
+        for name in landmark_names:
+            landmark = self.landmarks[name]
+            if landmark.is_placed:
+                group.reference_points.setdefault(name, (landmark.x, landmark.y))
+
+    @staticmethod
+    def _dependent_segment_indices(
+        group: GroupDefinition, start_index: int
+    ) -> list[int]:
+        """Return a segment and all later segments attached to its endpoint."""
+
+        affected = [start_index]
+        affected_landmarks = {group.segments[start_index][1]}
+        for index, (start, end) in enumerate(
+            group.segments[start_index + 1 :], start_index + 1
+        ):
+            if start in affected_landmarks:
+                affected.append(index)
+                affected_landmarks.add(end)
+        return affected
+
     def _apply_group_geometry(self, group: GroupDefinition, start_index: int):
-        """Move constrained segment endpoints while preserving segment lengths."""
+        """Update an articulated chain while preserving every affected length."""
+
+        affected_indices = self._dependent_segment_indices(group, start_index)
 
         original_geometry = {}
-        for index, (start, end) in enumerate(group.segments[start_index:], start_index):
+        for index in affected_indices:
+            start, end = group.segments[index]
             start_landmark = self.landmarks[start]
             end_landmark = self.landmarks[end]
             if not start_landmark.is_placed or not end_landmark.is_placed:
                 continue
             start_point = QPointF(start_landmark.x, start_landmark.y)
             end_point = QPointF(end_landmark.x, end_landmark.y)
-            original_geometry[index] = (
-                math.hypot(
+            reference_start = group.reference_points.get(start)
+            reference_end = group.reference_points.get(end)
+            if reference_start is None or reference_end is None:
+                length = math.hypot(
                     end_point.x() - start_point.x(), end_point.y() - start_point.y()
-                ),
+                )
+            else:
+                length = math.hypot(
+                    reference_end[0] - reference_start[0],
+                    reference_end[1] - reference_start[1],
+                )
+            original_geometry[index] = (
+                length,
                 trigonometric_heading(
                     self.canvas.image_to_widget(start_point),
                     self.canvas.image_to_widget(end_point),
                 ),
             )
 
-        for index in range(start_index, len(group.segments)):
+        for index in affected_indices:
             if index not in original_geometry:
                 continue
             start, end = group.segments[index]
@@ -1668,23 +1712,10 @@ class LandmarkEditor(QMainWindow):
             elif incoming is None:
                 heading = normalize_rotation(90 + imposed)
             else:
-                previous_start, previous_end = group.segments[incoming]
+                # Each distal turn is relative to the complete heading of its
+                # incoming segment, including all proximal imposed turns.
                 heading = normalize_rotation(
-                    trigonometric_heading(
-                        self.canvas.image_to_widget(
-                            QPointF(
-                                self.landmarks[previous_start].x,
-                                self.landmarks[previous_start].y,
-                            )
-                        ),
-                        self.canvas.image_to_widget(
-                            QPointF(
-                                self.landmarks[previous_end].x,
-                                self.landmarks[previous_end].y,
-                            )
-                        ),
-                    )
-                    + imposed
+                    self._defined_segment_heading(group, incoming) + imposed
                 )
 
             start_landmark = self.landmarks[start]
@@ -1751,10 +1782,9 @@ class LandmarkEditor(QMainWindow):
             if incoming is not None
             else 180.0
         )
-        step = int(self.angle_step_combo.currentText().removesuffix("°"))
         dialog = AngleSelectionDialog(
             f"{start} → {end}",
-            step,
+            ANGLE_SELECTION_STEP,
             None,
             relative=incoming is not None,
             reference_angle=90,
@@ -1763,6 +1793,7 @@ class LandmarkEditor(QMainWindow):
         )
         if dialog.exec() != QDialog.Accepted:
             return
+        self._capture_reference_points(group, start, end)
         group.segments.append((start, end))
         if group.angles or dialog.selected_angle is not None:
             self._ensure_segment_angles(group)
@@ -1775,6 +1806,79 @@ class LandmarkEditor(QMainWindow):
         self.dirty = True
         self.canvas.update()
         self.status_bar.showMessage(f"Segment {start} → {end} added to '{group.name}'.")
+
+    def _rotate_selected_group(self):
+        """Rotate every group landmark around the first segment's start point."""
+
+        group_name = self._selected_group_name()
+        if group_name is None:
+            QMessageBox.warning(self, "Group rotation", "Select an ordinary group first.")
+            return
+        group = self.groups[group_name]
+        if not group.segments:
+            QMessageBox.warning(
+                self, "Group rotation", "The selected group has no segments."
+            )
+            return
+        try:
+            angle = float(self.group_rotation_edit.text())
+        except ValueError:
+            QMessageBox.warning(
+                self, "Group rotation", "Enter a rotation angle as a number."
+            )
+            return
+        if not math.isfinite(angle):
+            QMessageBox.warning(
+                self, "Group rotation", "The rotation angle must be finite."
+            )
+            return
+
+        proximal_name, first_end = group.segments[0]
+        proximal_landmark = self.landmarks[proximal_name]
+        first_end_landmark = self.landmarks[first_end]
+        if not proximal_landmark.is_placed or not first_end_landmark.is_placed:
+            QMessageBox.warning(
+                self,
+                "Group rotation",
+                "Place the first segment landmarks before rotating the group.",
+            )
+            return
+
+        proximal_point = QPointF(proximal_landmark.x, proximal_landmark.y)
+        display_pivot = self.canvas.source_to_display.map(proximal_point)
+        first_end_display = self.canvas.source_to_display.map(
+            QPointF(first_end_landmark.x, first_end_landmark.y)
+        )
+        radians = math.radians(angle)
+        cosine = math.cos(radians)
+        sine = math.sin(radians)
+        group_landmarks = {
+            landmark_name for segment in group.segments for landmark_name in segment
+        }
+        for landmark_name in group_landmarks:
+            landmark = self.landmarks[landmark_name]
+            if not landmark.is_placed:
+                continue
+            display_point = self.canvas.source_to_display.map(
+                QPointF(landmark.x, landmark.y)
+            )
+            dx = display_point.x() - display_pivot.x()
+            dy = display_point.y() - display_pivot.y()
+            rotated_display = QPointF(
+                display_pivot.x() + dx * cosine + dy * sine,
+                display_pivot.y() - dx * sine + dy * cosine,
+            )
+            rotated_point = self.canvas.display_to_source.map(rotated_display)
+            landmark.x = rotated_point.x()
+            landmark.y = rotated_point.y()
+
+        self._ensure_segment_angles(group)
+        first_heading = trigonometric_heading(display_pivot, first_end_display)
+        group.angles[0] = normalize_rotation(first_heading + angle - 90)
+        self.group_rotation_edit.clear()
+        self.dirty = True
+        self.canvas.update()
+        self.status_bar.showMessage(f"Group '{group.name}' rotated by {angle:g}°.")
 
     def _delete_group(self):
         name = self._selected_group_name()
