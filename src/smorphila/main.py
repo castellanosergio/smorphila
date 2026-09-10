@@ -38,7 +38,7 @@ from . import save_data
 from .image_aligner import ImageAligner
 from .insert_landmarks import LandmarkPlugin
 from .layer_manager import LayerManager
-from .plugin_allinea_spezzata import SpezzataAligner
+from .plugin_allinea_spezzata_ols import SpezzataAligner
 from .plugin_arti import ArtiPlugin
 from .plugin_calibrazione import CalibrationPlugin
 from .plugin_gestione_layers import LayerPlugin
