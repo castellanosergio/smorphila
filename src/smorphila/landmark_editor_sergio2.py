@@ -808,6 +808,7 @@ class ImageCanvas(QWidget):
 
     image_clicked = Signal(QPointF)
     zoom_changed = Signal(float)
+    view_updated = Signal()
 
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
@@ -1002,6 +1003,7 @@ class ImageCanvas(QWidget):
 
     def paintEvent(self, event):
         super().paintEvent(event)
+        self.view_updated.emit()
         painter = QPainter(self)
         painter.fillRect(self.rect(), QColor("#252525"))
         if self.pixmap.isNull():
@@ -1096,6 +1098,134 @@ class ImageCanvas(QWidget):
             painter.drawText(point + QPointF(8, -8), landmark.name)
 
 
+class SkeletonPreview(QWidget):
+    """Show angle constraints on a separate, automatically fitted skeleton."""
+
+    COLORS = ("#55c7ff", "#68dfab", "#c69bff", "#ffb86b")
+
+    def __init__(self, canvas: ImageCanvas):
+        super().__init__()
+        self.canvas = canvas
+        self.setMinimumSize(240, 260)
+        canvas.view_updated.connect(self.update)
+
+    def skeleton_geometry(self):
+        """Build group geometry without changing the acquired landmarks."""
+
+        original = {
+            name: self.canvas.source_to_display.map(QPointF(landmark.x, landmark.y))
+            for name, landmark in self.canvas.landmarks.items()
+            if landmark.is_placed
+        }
+        shared = dict(original)
+        segments = []
+        points = []
+        used = set()
+        for group_index, group in enumerate(self.canvas.groups.values()):
+            placed = {}
+            headings = {}
+            for index, (start, end) in enumerate(group.segments):
+                if start not in original or end not in original:
+                    continue
+                source_heading = trigonometric_heading(original[start], original[end])
+                incoming = next(
+                    (
+                        previous
+                        for previous in reversed(range(index))
+                        if group.segments[previous][1] == start and previous in headings
+                    ),
+                    None,
+                )
+                angle = group.angles[index] if index < len(group.angles) else None
+                if incoming is None:
+                    heading = source_heading if angle is None else 90 + angle
+                else:
+                    previous_start, previous_end = group.segments[incoming]
+                    original_turn = normalize_rotation(
+                        source_heading
+                        - trigonometric_heading(
+                            original[previous_start], original[previous_end]
+                        )
+                    )
+                    heading = headings[incoming] + (
+                        original_turn if angle is None else angle
+                    )
+                headings[index] = normalize_rotation(heading)
+                first = placed.get(start, shared[start])
+                length = math.hypot(
+                    original[end].x() - original[start].x(),
+                    original[end].y() - original[start].y(),
+                )
+                radians = math.radians(heading)
+                second = first + QPointF(
+                    length * math.cos(radians), -length * math.sin(radians)
+                )
+                placed[start] = first
+                placed[end] = second
+                shared[end] = second
+                segments.append((first, second, angle, group_index))
+                # Keep separate occurrences when groups impose different positions.
+                points.extend(((start, first), (end, second)))
+                used.update((start, end))
+        points.extend((name, point) for name, point in original.items() if name not in used)
+        return points, segments
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.setBrush(QColor("#000000"))
+        painter.setPen(QPen(QColor("#343b46"), 1))
+        painter.drawRoundedRect(QRectF(self.rect()).adjusted(1, 1, -1, -1), 12, 12)
+        painter.setPen(QColor("#e4eaf2"))
+        painter.drawText(QRectF(16, 12, self.width() - 32, 24), "Skeleton preview")
+        painter.setPen(QColor("#8995a5"))
+        painter.drawText(QRectF(16, 36, self.width() - 32, 22), "Defined angles applied")
+
+        points, segments = self.skeleton_geometry()
+        if not points:
+            painter.drawText(self.rect(), Qt.AlignCenter, "Place landmarks to begin")
+            return
+
+        metrics = painter.fontMetrics()
+        label_width = min(
+            max(metrics.horizontalAdvance(name) for name, _ in points),
+            self.width() // 3,
+        )
+        area = QRectF(self.rect()).adjusted(24, 82, -24 - label_width, -32)
+        left = min(point.x() for _, point in points)
+        right = max(point.x() for _, point in points)
+        top = min(point.y() for _, point in points)
+        bottom = max(point.y() for _, point in points)
+        scale = min(area.width() / max(right - left, 1), area.height() / max(bottom - top, 1))
+        center = QPointF((left + right) / 2, (top + bottom) / 2)
+
+        def display(point):
+            return area.center() + (point - center) * scale
+
+        for first, second, angle, group_index in segments:
+            painter.setPen(QPen(QColor(self.COLORS[group_index % len(self.COLORS)]), 2))
+            painter.drawLine(display(first), display(second))
+            if angle is not None:
+                painter.setPen(QColor("#ffd36a"))
+                painter.drawText(display((first + second) / 2) + QPointF(6, -6), f"{angle:g}°")
+
+        drawn = set()
+        for name, point in points:
+            key = (name, round(point.x(), 6), round(point.y(), 6))
+            if key in drawn:
+                continue
+            drawn.add(key)
+            position = display(point)
+            selected = name == self.canvas.selected_landmark
+            painter.setPen(QPen(QColor("#000000"), 1))
+            painter.setBrush(QColor("#68dfab" if selected else "#e4eaf2"))
+            painter.drawEllipse(position, 4, 4)
+            painter.setPen(QColor("#e4eaf2"))
+            label = metrics.elidedText(name, Qt.ElideRight, label_width)
+            painter.drawText(position + QPointF(7, -7), label)
+
+
 class LandmarkEditor(QMainWindow):
     """Main window for creating landmark configuration files."""
 
@@ -1140,8 +1270,12 @@ class LandmarkEditor(QMainWindow):
 
         splitter = QSplitter()
         splitter.addWidget(self.canvas)
+        self.skeleton_preview = SkeletonPreview(self.canvas)
+        splitter.addWidget(self.skeleton_preview)
         splitter.addWidget(editor_panel)
-        splitter.setStretchFactor(0, 1)
+        splitter.setStretchFactor(0, 3)
+        splitter.setStretchFactor(1, 1)
+        splitter.setSizes([650, 280, 340])
         self.setCentralWidget(splitter)
 
         self.status_bar = QStatusBar()
