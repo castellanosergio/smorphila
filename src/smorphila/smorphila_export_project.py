@@ -1,4 +1,5 @@
 import json
+import math
 import sys
 from pathlib import Path
 
@@ -115,6 +116,18 @@ def get_semilandmarks(project):
     return names
 
 
+def get_distances(project):
+    """Return the distance names defined in the project setup."""
+
+    definitions = project.get("definitions", {})
+    distances = definitions.get("distances", {})
+
+    if not isinstance(distances, dict):
+        return []
+
+    return list(distances.keys())
+
+
 # ============================================================
 # 3. READ COORDINATES
 # ============================================================
@@ -223,6 +236,60 @@ def get_semilandmark_coordinates(
     return coordinates
 
 
+def get_scale(individual_data):
+    """Return a valid real-length-per-pixel scale and its unit."""
+
+    try:
+        scale = float(individual_data.get("scale"))
+    except (TypeError, ValueError):
+        return None, ""
+
+    if not math.isfinite(scale) or scale <= 0:
+        return None, ""
+
+    return scale, str(individual_data.get("scale_unit") or "")
+
+
+def scale_coordinates(coordinates, scale):
+    """Convert pixel coordinates to real-length coordinates."""
+
+    if scale is None:
+        return math.nan, math.nan
+
+    return coordinates[0] * scale, coordinates[1] * scale
+
+
+def get_distance_landmarks(project, distance_name):
+    """Return the two landmarks used by a project distance definition."""
+
+    definitions = project.get("definitions", {})
+    distance = definitions.get("distances", {}).get(distance_name, {})
+    landmarks = distance.get("landmarks") if isinstance(distance, dict) else None
+
+    if not isinstance(landmarks, list) or len(landmarks) != 2:
+        return None
+
+    return landmarks[0], landmarks[1]
+
+
+def get_distance_value(project, individual_data, distance_name):
+    """Calculate a selected distance in the individual's real-length unit."""
+
+    landmark_pair = get_distance_landmarks(project, distance_name)
+    scale, unit = get_scale(individual_data)
+
+    if landmark_pair is None or scale is None:
+        return math.nan, unit
+
+    first = get_landmark_coordinates(individual_data, landmark_pair[0])
+    second = get_landmark_coordinates(individual_data, landmark_pair[1])
+
+    if first is None or second is None:
+        return math.nan, unit
+
+    return math.dist(first[:2], second[:2]) * scale, unit
+
+
 # ============================================================
 # 4. BUILD POINT LIST
 # ============================================================
@@ -315,6 +382,8 @@ def check_individual(
     individual_data,
     selected_landmarks,
     selected_semilandmarks,
+    selected_distances=None,
+    project=None,
 ):
     """
     Check whether an individual contains all selected points.
@@ -365,6 +434,25 @@ def check_individual(
                 "empty semilandmark group: "
                 + group_name
             )
+
+
+    # --------------------------------------------------------
+    # Distance anchors
+    # --------------------------------------------------------
+
+    for distance_name in selected_distances or []:
+
+        landmark_pair = get_distance_landmarks(project, distance_name)
+
+        if landmark_pair is None:
+            problems.append("invalid distance definition: " + distance_name)
+            continue
+
+        for landmark_name in landmark_pair:
+            if get_landmark_coordinates(individual_data, landmark_name) is None:
+                problems.append(
+                    "missing distance landmark: " + landmark_name
+                )
 
 
     return problems
@@ -509,8 +597,10 @@ def export_tps(
                 get_landmark_coordinates(individual_data, name)
                 for name in selected_landmarks
             ]
+            scale, _ = get_scale(individual_data)
             file.write(f"LM={len(landmark_coordinates)}\n")
-            for x, y in landmark_coordinates:
+            for coordinates in landmark_coordinates:
+                x, y = scale_coordinates(coordinates, scale)
                 file.write(f"{x:.5f} {y:.5f}\n")
 
             file.write(f"CURVES={len(selected_semilandmarks)}\n")
@@ -519,7 +609,8 @@ def export_tps(
                     individual_data, group_name
                 )
                 file.write(f"POINTS={len(curve_coordinates)}\n")
-                for x, y in curve_coordinates:
+                for coordinates in curve_coordinates:
+                    x, y = scale_coordinates(coordinates, scale)
                     file.write(f"{x:.5f} {y:.5f}\n")
 
 
@@ -551,6 +642,7 @@ def export_txt(
     selected_individuals,
     selected_landmarks,
     selected_semilandmarks,
+    selected_distances,
     output_path,
 ):
     """
@@ -566,7 +658,7 @@ def export_txt(
     ) as file:
 
         file.write(
-            "individual\tpoint\tx\ty\n"
+            "individual\tpoint\tx\ty\tunit\n"
         )
 
 
@@ -582,8 +674,12 @@ def export_txt(
                 selected_semilandmarks,
             )
 
+            scale, unit = get_scale(individual_data)
+
 
             for point_name, x, y in points:
+
+                x, y = scale_coordinates((x, y), scale)
 
                 file.write(
                     code
@@ -593,8 +689,39 @@ def export_txt(
                     + str(x)
                     + "\t"
                     + str(y)
+                    + "\t"
+                    + unit
                     + "\n"
                 )
+
+
+        if selected_distances:
+
+            file.write("\nDISTANCES\n")
+            file.write("individual\tdistance\tvalue\tunit\n")
+
+            for code in selected_individuals:
+
+                individual_data = project["individuals"][code]
+
+                for distance_name in selected_distances:
+
+                    value, unit = get_distance_value(
+                        project,
+                        individual_data,
+                        distance_name,
+                    )
+
+                    file.write(
+                        code
+                        + "\t"
+                        + distance_name
+                        + "\t"
+                        + str(value)
+                        + "\t"
+                        + unit
+                        + "\n"
+                    )
 
 
 # ============================================================
@@ -774,6 +901,10 @@ class ExportDialog(QDialog):
             self.project
         )
 
+        self.distances = get_distances(
+            self.project
+        )
+
 
         # ----------------------------------------------------
         # Window
@@ -853,19 +984,24 @@ class ExportDialog(QDialog):
 
 
         # ----------------------------------------------------
-        # Landmarkss and semilandmarks
+        # Landmarks, semilandmarks, and distances
         # ----------------------------------------------------
 
         point_layout = QVBoxLayout()
 
         self.landmark_list = ListaCheckbox(
-            "Landmarkss",
+            "Landmarks",
             self.landmarks,
         )
 
         self.semilandmark_list = ListaCheckbox(
-            "Semilandmarkss",
+            "Semilandmarks",
             self.semilandmarks,
+        )
+
+        self.distance_list = ListaCheckbox(
+            "Distances (TXT only)",
+            self.distances,
         )
 
 
@@ -875,6 +1011,10 @@ class ExportDialog(QDialog):
 
         point_layout.addWidget(
             self.semilandmark_list
+        )
+
+        point_layout.addWidget(
+            self.distance_list
         )
 
 
@@ -933,8 +1073,8 @@ class ExportDialog(QDialog):
         # ====================================================
 
         note = QLabel(
-        "The coordinates are read directly "
-        "from the 'individuals' section of the project."
+        "Coordinates are converted from pixels using each individual's scale. "
+        "Selected distances are included in TXT exports only."
         )
 
         note.setWordWrap(True)
@@ -1000,6 +1140,10 @@ class ExportDialog(QDialog):
             self.semilandmark_list.get_selected()
         )
 
+        selected_distances = (
+            self.distance_list.get_selected()
+        )
+
 
         # ----------------------------------------------------
         # Basic checks
@@ -1019,12 +1163,28 @@ class ExportDialog(QDialog):
         if (
             len(selected_landmarks) == 0
             and len(selected_semilandmarks) == 0
+            and len(selected_distances) == 0
         ):
 
             QMessageBox.warning(
                 self,
                 "Exported",
                 "No point has been selected.",
+            )
+
+            return
+
+
+        if (
+            self.radio_tps.isChecked()
+            and len(selected_landmarks) == 0
+            and len(selected_semilandmarks) == 0
+        ):
+
+            QMessageBox.warning(
+                self,
+                "Export",
+                "TPS does not include distances. Select points or use TXT.",
             )
 
             return
@@ -1046,6 +1206,8 @@ class ExportDialog(QDialog):
                 individual_data,
                 selected_landmarks,
                 selected_semilandmarks,
+                selected_distances if self.radio_txt.isChecked() else [],
+                self.project,
             )
 
             for error in errors:
@@ -1072,6 +1234,34 @@ class ExportDialog(QDialog):
             )
 
             return
+
+
+        # ====================================================
+        # Missing scale information
+        # ====================================================
+
+        missing_scale = []
+
+        for code in selected_individuals:
+
+            scale, _ = get_scale(
+                self.project["individuals"][code]
+            )
+
+            if scale is None:
+                missing_scale.append(code)
+
+
+        if missing_scale:
+
+            QMessageBox.warning(
+                self,
+                "Missing scale information",
+                "Scale information is missing or invalid for the following "
+                "individuals. Their exported coordinates and distances will "
+                "be written as nan:\n\n"
+                + "\n".join(missing_scale),
+            )
 
 
         # ====================================================
@@ -1209,6 +1399,7 @@ class ExportDialog(QDialog):
                 selected_individuals,
                 selected_landmarks,
                 selected_semilandmarks,
+                selected_distances,
                 output_path,
             )
 
