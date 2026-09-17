@@ -3,6 +3,7 @@ main program of smorphila package
 """
 
 import json
+import copy
 import pathlib as pl
 import sys
 import tomllib
@@ -43,6 +44,7 @@ from .plugin_arti import ArtiPlugin
 from .plugin_calibrazione import CalibrationPlugin
 from .plugin_gestione_layers import LayerPlugin
 from .plugin_spezzata_curva import SpezzataCurva
+from .project_store import load_project
 from .rileva_contorno import ContourPlugin
 
 __version__ = "0.0.4"
@@ -181,14 +183,8 @@ class ClickableLabel(QLabel):
             # Update view_rect
             self.viewer.view_rect = new_rect
 
-            # Update the displayed image
-            container_size = self.viewer.scroll_area.viewport().size()
-            cropped = self.viewer.pixmap.copy(self.viewer.view_rect)
-            scaled = cropped.scaled(
-                container_size, Qt.KeepAspectRatio, Qt.SmoothTransformation
-            )
-            self.viewer.scaled_pixmap = scaled
-            self.setPixmap(scaled)
+            # Update the displayed image and visible layers
+            self.viewer.layer_manager.update_display()
 
             # Set the new starting position for the next drag
             self.viewer.drag_start_pos = event.position()
@@ -240,7 +236,7 @@ class ClickableLabel(QLabel):
 
 
 class ImageViewer(QMainWindow):
-    def __init__(self):
+    def __init__(self, project_path: pl.Path | None = None):
         super().__init__()
 
         self.central_widget = QWidget()
@@ -268,12 +264,19 @@ class ImageViewer(QMainWindow):
         self.file_path = pl.Path("")
         self.code = ""
         self.mass_value = 0.0
+        self.project_path: pl.Path | None = None
 
         self.landmark_names = []
         self.landmarks_groups = {}
+        self.curves = {}
         self.main_axis = None
+        self.reference_axis = None
+        self.reference_axis_aligned = False
+        self.coordinate_display_offset = (0.0, 0.0)
+        self.raw_to_display_transform = None
         self.semilandmarks = {}
         self.landmarks = self.init_landmarks(self.landmark_names)
+        self.landmarks_raw: dict | None = None
 
         self.scale_factor = 1
 
@@ -314,18 +317,6 @@ class ImageViewer(QMainWindow):
         grid.addWidget(self.reset_button, 8, 4, 1, 1)
 
         self.selection_mode = False
-        self.activate_selector_button = QPushButton("Zoom")
-        self.activate_selector_button.setCheckable(True)
-        self.activate_selector_button.clicked.connect(self.toggle_selection_mode)
-        grid.addWidget(self.activate_selector_button, 8, 5, 1, 1)
-
-        self.zoom_out_button = QPushButton("Zoom out")
-        self.zoom_out_button.clicked.connect(self.reset_view_rect)
-        grid.addWidget(self.zoom_out_button, 8, 6, 1, 1)
-
-        self.save_data_button = QPushButton("Save data")
-        self.save_data_button.clicked.connect(self.save_data)
-        grid.addWidget(self.save_data_button, 8, 9, 1, 1)
 
         self.central_widget.setLayout(grid)
         self.setWindowTitle(f"SMORPHILA - v. {__version__} {__version_date__}")
@@ -348,15 +339,24 @@ class ImageViewer(QMainWindow):
         open_action.triggered.connect(self.load)
         file_menu.addAction(open_action)
 
-        load_project_action = QAction("Load project", self)
-        load_project_action.triggered.connect(self.load_project)
-        file_menu.addAction(load_project_action)
+        save_data_action = QAction("Save data", self)
+        save_data_action.setShortcut("Ctrl+S")
+        save_data_action.triggered.connect(self.save_data)
+        file_menu.addAction(save_data_action)
 
-        toggle_layer_action = QAction("Show/Hide landmarks", self)
-        toggle_layer_action.triggered.connect(
-            lambda: self.layer_manager.toggle_visibility("landmarks")
+        constrained_landmarks_action = QAction("Show constrained landmarks", self)
+        constrained_landmarks_action.setCheckable(True)
+        constrained_landmarks_action.setChecked(True)
+        constrained_landmarks_action.triggered.connect(
+            lambda visible: self._set_layer_visibility("landmarks", visible)
         )
-        view_menu.addAction(toggle_layer_action)
+        raw_landmarks_action = QAction("Show raw landmarks", self)
+        raw_landmarks_action.setCheckable(True)
+        raw_landmarks_action.triggered.connect(
+            lambda visible: self._set_layer_visibility("landmarks_raw", visible)
+        )
+        view_menu.addAction(constrained_landmarks_action)
+        view_menu.addAction(raw_landmarks_action)
 
         zoom_in_action = QAction("Zoom in", self)
         zoom_out_action = QAction("Zoom out", self)
@@ -382,7 +382,7 @@ class ImageViewer(QMainWindow):
         self.gestione_layers = LayerPlugin(self)
 
         # Add plugin to the Landmarks menu
-        spezzata_action = QAction("Align polyline (CTRL+S)", self)
+        spezzata_action = QAction("Align polyline (CTRL+I)", self)
         spezzata_action.triggered.connect(self.spezzata_plugin.start)
         landmarks_menu.addAction(spezzata_action)
 
@@ -432,8 +432,8 @@ class ImageViewer(QMainWindow):
         shortcut_landmark = QShortcut(QKeySequence("Ctrl+L"), self)
         shortcut_landmark.activated.connect(self.insert_landmarks.activate)
 
-        # Ctrl+S -> activate landmarks
-        shortcut_landmark = QShortcut(QKeySequence("Ctrl+S"), self)
+        # Ctrl+I -> align polyline
+        shortcut_landmark = QShortcut(QKeySequence("Ctrl+I"), self)
         shortcut_landmark.activated.connect(self.spezzata_plugin.start)
 
         #  "1" → zoom in
@@ -477,6 +477,8 @@ class ImageViewer(QMainWindow):
 
         self.show()
         QTimer.singleShot(500, lambda: print("Initial focus:", self.focusWidget()))
+        if project_path is not None:
+            QTimer.singleShot(0, lambda: self._load_project_path(project_path))
 
     def move_view_rect(self, dx, dy):
         if not hasattr(self, "view_rect") or self.view_rect is None:
@@ -572,42 +574,144 @@ class ImageViewer(QMainWindow):
             groups,
         )
 
+    @staticmethod
+    def _read_unified_project(project_path: pl.Path):
+        """Read landmark definitions from a unified SMORPHILA project."""
+
+        project = load_project(project_path)
+        definitions = project["definitions"]
+        landmarks_data = definitions.get("landmarks", {})
+        if not isinstance(landmarks_data, dict):
+            raise ValueError("definitions.landmarks must be an object")
+        names = list(landmarks_data)
+        landmarks = {name: {"coordinates": [], "color": None} for name in names}
+        groups_data = definitions.get("landmarks_groups", {})
+        if not isinstance(groups_data, dict):
+            raise ValueError("definitions.landmarks_groups must be an object")
+        groups = {}
+        for group_name, group_data in groups_data.items():
+            if not isinstance(group_data, dict):
+                raise ValueError(f"Group '{group_name}' must be an object")
+            segments = group_data.get("segments", [])
+            if not isinstance(segments, list):
+                raise ValueError(f"Segments for group '{group_name}' must be an array")
+            if any(
+                not isinstance(segment, list)
+                or len(segment) != 2
+                or not all(isinstance(name, str) for name in segment)
+                for segment in segments
+            ):
+                raise ValueError(
+                    f"Each segment in group '{group_name}' must contain two landmarks"
+                )
+            groups[group_name] = {
+                "segments": segments,
+                "angles": group_data.get("angles", []),
+            }
+        curves_data = definitions.get("curves", {})
+        if not isinstance(curves_data, dict):
+            raise ValueError("definitions.curves must be an object")
+        curves = {}
+        for curve_name, curve_data in curves_data.items():
+            if not isinstance(curve_data, dict):
+                raise ValueError(f"Curve '{curve_name}' must be an object")
+            point_count = curve_data.get("point_count")
+            start_landmark = curve_data.get("start_landmark")
+            end_landmark = curve_data.get("end_landmark")
+            if (
+                isinstance(point_count, bool)
+                or not isinstance(point_count, int)
+                or point_count < 2
+            ):
+                raise ValueError(
+                    f"Curve '{curve_name}' must define at least two intervals"
+                )
+            if not isinstance(start_landmark, str) or not isinstance(end_landmark, str):
+                raise ValueError(f"Curve '{curve_name}' anchors must be landmark names")
+            if start_landmark == end_landmark:
+                raise ValueError(f"Curve '{curve_name}' must use two different anchors")
+            if start_landmark not in landmarks or end_landmark not in landmarks:
+                raise ValueError(f"Curve '{curve_name}' references an unknown landmark")
+            curves[curve_name] = {
+                "point_count": point_count,
+                "start_landmark": start_landmark,
+                "end_landmark": end_landmark,
+            }
+        return names, landmarks, groups, definitions.get("reference_axis"), curves
+
     def load_project(self):
         project_name, _ = QFileDialog.getOpenFileName(
-            self, "Load project", "", "Projects (*.toml);;All files (*)"
+            self, "Load project", "", "Projects (*.json *.toml);;All files (*)"
         )
         if not project_name:
             return
-        project_path = pl.Path(project_name)
+        self._load_project_path(pl.Path(project_name))
+
+    def _load_project_path(self, project_path: pl.Path):
         try:
-            names, landmarks, groups = self._read_project(project_path)
+            if project_path.suffix.lower() == ".json":
+                (
+                    names,
+                    landmarks,
+                    groups,
+                    reference_axis,
+                    curves,
+                ) = self._read_unified_project(project_path)
+            else:
+                names, landmarks, groups = self._read_project(project_path)
+                reference_axis = None
+                curves = {}
         except (TypeError, ValueError) as error:
             QMessageBox.critical(self, "Load project", str(error))
             return
         self.landmark_names = names
         self.landmarks_groups = groups
+        self.reference_axis = reference_axis
+        self.curves = curves
+        self.semilandmarks = {
+            name: {
+                "landmarks": [curve["start_landmark"], curve["end_landmark"]],
+                "nsemilandmarks": [curve["point_count"]],
+                "coordinates": [],
+            }
+            for name, curve in curves.items()
+        }
         self.landmarks = landmarks
         self.landmark_combo.clear()
         self.landmark_combo.addItems(self.landmark_names)
-        self.project_path = project_path
+        self.project_path = (
+            project_path if project_path.suffix.lower() == ".json" else None
+        )
         self.layer_manager.update_display()
         self.status_bar.showMessage(f"Project loaded: {project_path.name}")
 
     def load(self):
+        initial_directory = ""
+        if self.project_path is not None:
+            images_directory = self.project_path.parent / "images"
+            initial_directory = str(
+                images_directory
+                if images_directory.is_dir()
+                else self.project_path.parent
+            )
         file_path, _ = QFileDialog.getOpenFileName(
             self,
             "Choose an image",
-            "",
+            initial_directory,
             f"Images ({IMAGE_EXTENSION});;All files (*)",
         )
         if not file_path:
             return
         self.glb = [file_path]
         self.idx = 0
+        individual_data = self._individual_for_image(pl.Path(file_path))
         self.load_image(self.glb[self.idx])
-
-        # check if JSON file is present
-        if pl.Path(file_path).with_suffix(".json").is_file():
+        if individual_data is not None:
+            self._load_individual_data(individual_data)
+            self.status_bar.showMessage(
+                f"Image loaded: {self.code} (project data found)"
+            )
+        elif pl.Path(file_path).with_suffix(".json").is_file():
             self.load_json(pl.Path(file_path).with_suffix(".json"))
 
             self.status_bar.showMessage(f"Image loaded: {self.code} (json file found)")
@@ -621,12 +725,62 @@ class ImageViewer(QMainWindow):
             f"{pl.Path(file_path).name} - Morphometric analysis - v. {__version__}"
         )
 
+    def apply_reference_axis_alignment(self) -> bool:
+        """Align all placed landmarks using the configured reference axis."""
+
+        if self.reference_axis_aligned:
+            return True
+        axis = self.reference_axis
+        if not isinstance(axis, dict):
+            return True
+        landmark_names = axis.get("landmarks")
+        if (
+            not isinstance(landmark_names, list)
+            or len(landmark_names) != 2
+            or not all(isinstance(name, str) for name in landmark_names)
+        ):
+            return True
+        if any(
+            not self.landmarks.get(name, {}).get("coordinates")
+            for name in landmark_names
+        ):
+            QMessageBox.warning(
+                self,
+                "Reference axis",
+                "Place both reference-axis landmarks before creating the idealized polyline.",
+            )
+            return False
+        self.image_aligner.align_project_reference_axis(landmark_names)
+        self.reference_axis_aligned = True
+        return True
+
     def load_json(self, file_path):
-        """
-        load json file
-        """
+        """Load a legacy individual JSON file."""
         with open(file_path, "r") as file_in:
             d = json.load(file_in)
+        self._load_individual_data(d)
+
+    def _individual_for_image(self, image_path: pl.Path):
+        """Return the unified-project record associated with an image, if any."""
+
+        if self.project_path is None:
+            return None
+        try:
+            project = load_project(self.project_path)
+            resolved_image = image_path.resolve()
+            for individual_data in project["individuals"].values():
+                stored_path = individual_data.get("image_path")
+                if not isinstance(stored_path, str):
+                    continue
+                candidate = (self.project_path.parent / stored_path).resolve()
+                if candidate == resolved_image:
+                    return individual_data
+        except (OSError, ValueError):
+            return None
+        return None
+
+    def _load_individual_data(self, d):
+        """Load one individual record from either supported JSON format."""
 
         self.scale = d["scale"]
         self.scale_unit = d["scale_unit"]
@@ -634,40 +788,71 @@ class ImageViewer(QMainWindow):
         self.code = d["code"]
         self.mass_value = d["mass_value"]
         landmarks_json = d["landmarks"]
+        raw_landmarks = d.get("landmarks_raw", landmarks_json)
+        if not isinstance(raw_landmarks, dict):
+            raw_landmarks = landmarks_json
+        self.landmarks_raw = copy.deepcopy(raw_landmarks)
+        rebuild_idealized_polyline = (
+            isinstance(self.reference_axis, dict) and bool(self.landmarks_groups)
+        )
+        loaded_landmarks = raw_landmarks if rebuild_idealized_polyline else landmarks_json
+        self.layer_manager.create_layer("landmarks")
+        self.layer_manager.create_layer("landmarks_raw")
+        self.layer_manager.visible["landmarks"] = True
+        self.layer_manager.visible["landmarks_raw"] = False
 
         # Make it possible to add or remove landmarks
         for key in self.landmarks:
-            if key in landmarks_json:
-                self.landmarks[key] = landmarks_json[key]
-                if self.landmarks[key]["coordinates"] != None:
-                    check = 1
+            if key in loaded_landmarks:
+                self.landmarks[key] = copy.deepcopy(loaded_landmarks[key])
             else:
                 self.landmarks[key] = {"coordinates": None, "color": None}
-            if check == 1:
-                self.layer_manager.create_layer("landmarks")
 
-        self.semilandmarks_json = d["semilandmarks"]
-        # Make it possible to add or remove semilandmarks
+        self.semilandmarks_json = d.get("semilandmarks", {})
+        if not isinstance(self.semilandmarks_json, dict):
+            self.semilandmarks_json = {}
 
-        for key in self.semilandmarks:
-            if (
-                self.semilandmarks[key]["landmarks"]
-                == self.semilandmarks_json[key]["landmarks"]
-            ):
-                coord = self.semilandmarks_json[key].get("coordinates", [])
-                self.semilandmarks[key]["coordinates"] = coord
+        for key, semilandmark in self.semilandmarks.items():
+            saved_semilandmark = self.semilandmarks_json.get(key)
+            if not isinstance(saved_semilandmark, dict):
+                continue
+            if semilandmark["landmarks"] != saved_semilandmark.get("landmarks"):
+                continue
+            coordinates = saved_semilandmark.get("coordinates", [])
+            if not isinstance(coordinates, list):
+                continue
+            semilandmark["coordinates"] = coordinates
+            self.layer_manager.create_layer("semilandmarks")
 
-                self.layer_manager.create_layer("semilandmarks")
-
-        # rotation
-        self.angle_deg = 0
-        self.rotate_angle(d["angle_deg"])
+        if rebuild_idealized_polyline:
+            self.angle_deg = 0
+            self.reference_axis_aligned = False
+            self.coordinate_display_offset = (0.0, 0.0)
+            self.raw_to_display_transform = None
+            self.plugin_arti.activate()
+        else:
+            self.angle_deg = 0
+            self.rotate_angle(d["angle_deg"])
+            self.reference_axis_aligned = bool(d.get("reference_axis_aligned", False))
+            self.coordinate_display_offset = tuple(
+                d.get("coordinate_display_offset", [0.0, 0.0])
+            )
+            self.raw_to_display_transform = d.get("raw_to_display_transform")
 
         if self.scale:
             self.scale_label.setText(f"Scale: {self.scale:.4f} {self.scale_unit}/px")
 
+    def _set_layer_visibility(self, name: str, visible: bool):
+        if name in self.layer_manager.layers:
+            self.layer_manager.visible[name] = visible
+            self.layer_manager.update_display()
+
     def load_image(self, file_name):
         self.reset_all()
+        self.reference_axis_aligned = False
+        self.landmarks_raw = None
+        self.coordinate_display_offset = (0.0, 0.0)
+        self.raw_to_display_transform = None
         self.pixmap = QPixmap()
         self.pixmap.load(str(file_name))
 
@@ -836,17 +1021,7 @@ class ImageViewer(QMainWindow):
 
     def disattiva_zoom(self):
         self.selection_mode = False
-        self.activate_selector_button.setChecked(False)
         if self.insert_landmarks.active or self.spezzata_plugin.active:
-            self.image.setCursor(Qt.CrossCursor)
-
-    def toggle_selection_mode(self):
-        self.selection_mode = self.activate_selector_button.isChecked()
-        if self.selection_mode:
-            self.insert_landmarks.active = False
-            self.spezzata_plugin.active = False
-            self.image.setCursor(Qt.CrossCursor)
-        else:
             self.image.setCursor(Qt.CrossCursor)
 
     def reset(self):
@@ -865,7 +1040,6 @@ class ImageViewer(QMainWindow):
         self.spezzata_curva.active = False
         self.image_aligner.active = False
         self.selection_mode = False
-        self.activate_selector_button.setChecked(False)
         self.calibrazione.deactivate()
         # Set the QLabel cursor
         self.image.setCursor(Qt.ArrowCursor)
@@ -902,9 +1076,8 @@ class ImageViewer(QMainWindow):
         self.landmark_combo.setCurrentIndex(0)
         self.scaling_mode.setCurrentIndex(1)
 
-        # Buttons and states
+        # State
         self.selection_mode = False
-        self.activate_selector_button.setChecked(False)
 
         # Layers: clear everything
         if self.layer_manager:
@@ -924,7 +1097,8 @@ class ImageViewer(QMainWindow):
 
 def run():
     app = QApplication(sys.argv)
-    viewer = ImageViewer()
+    project_path = pl.Path(sys.argv[1]) if len(sys.argv) > 1 else None
+    viewer = ImageViewer(project_path)
     # if len(sys.argv) > 1:
     #    viewer
 

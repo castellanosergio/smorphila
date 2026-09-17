@@ -1,6 +1,6 @@
 from PySide6.QtWidgets import QMessageBox
-from PySide6.QtGui import QTransform, QColor, Qt
-from PySide6.QtCore import QRect
+from PySide6.QtGui import QPixmap, QTransform, QColor, Qt
+from PySide6.QtCore import QPointF, QRect
 import math
 
 
@@ -9,8 +9,33 @@ class ImageAligner:
         self.viewer = viewer
         self.points = []
         self.active = False
+        self.reference_landmarks = None
 
     def align_image(self):
+        self.reference_landmarks = None
+        self._start_alignment(
+            "Click the point to use as the origin (0,0), then click a second point to define the Y-axis direction."
+        )
+
+    def align_reference_axis(self, landmark_names):
+        """Align a new image using the two project reference-axis landmarks."""
+
+        self.reference_landmarks = landmark_names
+        self._start_alignment(
+            f"Click reference landmark '{landmark_names[0]}', then '{landmark_names[1]}'."
+        )
+
+    def align_project_reference_axis(self, landmark_names):
+        """Align an image from already placed reference-axis landmarks."""
+
+        self.reference_landmarks = landmark_names
+        self.points = [
+            QPointF(*self.viewer.landmarks[name]["coordinates"])
+            for name in landmark_names
+        ]
+        self.finalize_transformation()
+
+    def _start_alignment(self, instruction):
         self.viewer.mode_label.setText("ALIGNMENT MODE")
 
         self.points = []
@@ -21,7 +46,7 @@ class ImageAligner:
         QMessageBox.information(
             self.viewer,
             "Axis definition",
-            "Click the point to use as the origin (0,0), then click a second point to define the Y-axis direction.",
+            instruction,
         )
 
     def handle_click(self, pos):
@@ -60,16 +85,42 @@ class ImageAligner:
         transform = QTransform()
         transform.translate(-p1.x(), -p1.y())
         transform.rotate(angle_deg)
+        display_transform = QPixmap.trueMatrix(
+            transform, self.viewer.pixmap.width(), self.viewer.pixmap.height()
+        )
+
+        if self.reference_landmarks is not None:
+            analytical_origin = transform.map(p1)
+            display_origin = display_transform.map(p1)
+            self.viewer.coordinate_display_offset = (
+                display_origin.x(),
+                display_origin.y(),
+            )
+            self.viewer.raw_to_display_transform = {
+                "m11": display_transform.m11(), "m12": display_transform.m12(),
+                "m21": display_transform.m21(), "m22": display_transform.m22(),
+                "dx": display_transform.dx(), "dy": display_transform.dy(),
+            }
+            for landmark in self.viewer.landmarks.values():
+                coordinates = landmark.get("coordinates")
+                if not coordinates:
+                    continue
+                mapped = transform.map(QPointF(*coordinates))
+                landmark["coordinates"] = (
+                    mapped.x() - analytical_origin.x(),
+                    mapped.y() - analytical_origin.y(),
+                )
 
         transformed_pixmap = self.viewer.pixmap.transformed(
             transform, Qt.SmoothTransformation
         )
 
-        axis_definition = self.viewer.layer_manager.layers[
-            "axis_definition"
-        ].transformed(transform, Qt.SmoothTransformation)
-        self.viewer.layer_manager.layers["axis_definition"] = axis_definition
-        self.viewer.layer_manager.visible["axis_definition"] = True
+        if "axis_definition" in self.viewer.layer_manager.layers:
+            axis_definition = self.viewer.layer_manager.layers[
+                "axis_definition"
+            ].transformed(transform, Qt.SmoothTransformation)
+            self.viewer.layer_manager.layers["axis_definition"] = axis_definition
+            self.viewer.layer_manager.visible["axis_definition"] = True
 
         self.viewer.pixmap = transformed_pixmap
         self.viewer.image.setPixmap(transformed_pixmap)
@@ -99,3 +150,4 @@ class ImageAligner:
         self.viewer.layer_manager.clear_layer("axis_definition")
 
         self.viewer.mode_label.setText("")
+        self.reference_landmarks = None

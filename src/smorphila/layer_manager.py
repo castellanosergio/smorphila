@@ -20,6 +20,26 @@ class LayerManager:
             self.layers[name] = pixmap
             self.visible[name] = True
 
+    def _display_point(self, point):
+        """Map an analytical coordinate into the displayed pixmap coordinates."""
+
+        offset_x, offset_y = getattr(
+            self.viewer, "coordinate_display_offset", (0.0, 0.0)
+        )
+        if isinstance(point, tuple):
+            point = QPointF(point[0], point[1])
+        return QPointF(point.x() + offset_x, point.y() + offset_y)
+
+    def _raw_display_point(self, point):
+        transform = getattr(self.viewer, "raw_to_display_transform", None)
+        if not isinstance(transform, dict):
+            return None
+        x, y = point
+        return QPointF(
+            transform["m11"] * x + transform["m21"] * y + transform["dx"],
+            transform["m12"] * x + transform["m22"] * y + transform["dy"],
+        )
+
     def draw_rect(self, name, rect, color=QColor(0, 255, 0, 180), fill=QColor(0, 255, 0, 60)):
         # print("RECT", rect)
         # print("Layers",self.layers[name])
@@ -34,7 +54,7 @@ class LayerManager:
         painter.end()
 
     def draw_points(self, name, points, color=Qt.red):
-        points = [QPointF(pt[0], pt[1]) if isinstance(pt, tuple) else pt for pt in points]
+        points = [self._display_point(pt) for pt in points]
         #print(points)
         """Disegna una lista di QPointF su un layer"""
         zoom_factor = self.viewer.pixmap.width() / self.viewer.view_rect.width()
@@ -65,10 +85,8 @@ class LayerManager:
         print("SEGMENTI", segmenti)
         #print(f"{p1=}")
         for p1, p2 in segmenti:
-            if isinstance(p1, tuple):
-                p1 = QPointF(p1[0], p1[1])
-            if isinstance(p2, tuple):
-                p2 = QPointF(p2[0], p2[1])
+            p1 = self._display_point(p1)
+            p2 = self._display_point(p2)
             #print(f"{p1=}")
             painter.drawLine(p1, p2)
         painter.end()
@@ -113,9 +131,23 @@ class LayerManager:
                 for nome, info in self.viewer.landmarks.items():
                     coord = info.get("coordinates")
                     if coord:
-                        punti.append(QPointF(*coord))
+                        punti.append(self._display_point(tuple(coord)))
 
                 painter.setBrush(QColor(255, 0, 0, 180))
+                painter.setPen(Qt.NoPen)
+                for pt in punti:
+                    painter.drawEllipse(pt, radius, radius)
+
+            elif name == "landmarks_raw":
+                punti = []
+                for info in (self.viewer.landmarks_raw or {}).values():
+                    coord = info.get("coordinates")
+                    if coord:
+                        point = self._raw_display_point(coord)
+                        if point is not None:
+                            punti.append(point)
+
+                painter.setBrush(QColor(255, 165, 0, 180))
                 painter.setPen(Qt.NoPen)
                 for pt in punti:
                     painter.drawEllipse(pt, radius, radius)
@@ -128,7 +160,7 @@ class LayerManager:
                     painter.setBrush(QColor(0, 255, 0, 180))
                     painter.setPen(Qt.NoPen)
                     for pt in punti:
-                        pt = QPointF(*pt)
+                        pt = self._display_point(tuple(pt))
                         painter.drawEllipse(pt, radius, radius)
 
             else:

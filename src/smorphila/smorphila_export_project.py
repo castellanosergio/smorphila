@@ -505,28 +505,22 @@ def export_tps(
                 project["individuals"][code]
             )
 
-            points = get_individual_points(
-                individual_data,
-                selected_landmarks,
-                selected_semilandmarks,
-            )
+            landmark_coordinates = [
+                get_landmark_coordinates(individual_data, name)
+                for name in selected_landmarks
+            ]
+            file.write(f"LM={len(landmark_coordinates)}\n")
+            for x, y in landmark_coordinates:
+                file.write(f"{x:.5f} {y:.5f}\n")
 
-
-            file.write(
-                "LM="
-                + str(len(points))
-                + "\n"
-            )
-
-
-            for point_name, x, y in points:
-
-                file.write(
-                    str(x)
-                    + " "
-                    + str(y)
-                    + "\n"
+            file.write(f"CURVES={len(selected_semilandmarks)}\n")
+            for group_name in selected_semilandmarks:
+                curve_coordinates = get_semilandmark_coordinates(
+                    individual_data, group_name
                 )
+                file.write(f"POINTS={len(curve_coordinates)}\n")
+                for x, y in curve_coordinates:
+                    file.write(f"{x:.5f} {y:.5f}\n")
 
 
             # Write the specimen/file name before the progressive ID.
@@ -1303,11 +1297,15 @@ class MainWindow(QWidget):
         if not json_path:
             return
 
+        self.open_project_path(Path(json_path))
+
+    def open_project_path(self, json_path: Path):
+
 
         try:
 
             project = read_project(
-                json_path
+                str(json_path)
             )
 
 
@@ -1335,7 +1333,7 @@ class MainWindow(QWidget):
 
 
         dialog = ExportDialog(
-            json_path,
+            str(json_path),
             self,
         )
 
@@ -1347,16 +1345,11 @@ class MainWindow(QWidget):
 # ============================================================
 
 def run():
-
     app = QApplication(sys.argv)
-
-    window = MainWindow()
-
-    window.show()
-
-    sys.exit(
-        app.exec()
-    )
+    if len(sys.argv) < 2:
+        QMessageBox.critical(None, "Export", "A project file is required.")
+        return
+    ExportDialog(sys.argv[1]).exec()
 
 
 if __name__ == "__main__":

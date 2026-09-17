@@ -6,6 +6,40 @@ from PySide6.QtWidgets import QInputDialog, QMessageBox
 from pathlib import Path
 import re
 import json
+import os
+import copy
+
+from .project_store import definition_signature, load_project, save_project
+
+
+def _save_to_unified_project(viewer, data, code):
+    """Store one individual in the unified project and rename its image."""
+
+    project_path = viewer.project_path
+    original_path = viewer.file_path
+    image_path = original_path.parent / Path(code).with_suffix(".jpg")
+    if image_path != original_path and image_path.exists():
+        raise ValueError(f"The image file already exists: {image_path.name}")
+
+    if image_path != original_path:
+        original_path.rename(image_path)
+    try:
+        project = load_project(project_path)
+        data["image_path"] = os.path.relpath(
+            image_path, start=project_path.parent
+        ).replace("\\", "/")
+        data["definition_signature"] = definition_signature(project["definitions"])
+        project["individuals"][code] = data
+        save_project(project_path, project)
+    except Exception:
+        if image_path != original_path and image_path.is_file():
+            image_path.rename(original_path)
+        raise
+
+    viewer.file_path = image_path
+    viewer.setWindowTitle(
+        f"{image_path.name} - Morphometric analysis - v. {viewer.__version__}"
+    )
 
 
 def save_data_json(viewer):
@@ -78,13 +112,33 @@ def save_data_json(viewer):
         "mass_value": mass_value,
         "code": code,
         "angle_deg": viewer.angle_deg,
+        "reference_axis_aligned": viewer.reference_axis_aligned,
+        "coordinate_display_offset": viewer.coordinate_display_offset,
+        "raw_to_display_transform": viewer.raw_to_display_transform,
         # "image_file_name": viewer.nome_file,
         # "directory_path": viewer.DIR_PNG,
         "scale": viewer.scale,
         "scale_unit": viewer.scale_unit,
+        "landmarks_raw": copy.deepcopy(
+            viewer.landmarks_raw
+            if viewer.landmarks_raw is not None
+            else viewer.landmarks
+        ),
         "landmarks": viewer.landmarks,
         "semilandmarks": viewer.semilandmarks,
     }
+
+    if getattr(viewer, "project_path", None) is not None:
+        try:
+            _save_to_unified_project(viewer, data, code)
+            QMessageBox.information(
+                None,
+                "Information",
+                f"Data saved to {viewer.project_path.name}",
+            )
+        except (OSError, ValueError) as error:
+            QMessageBox.critical(None, "Warning", str(error))
+        return
 
     json_file_path = viewer.file_path.parent / Path(code).with_suffix(".json")
 

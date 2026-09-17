@@ -4,67 +4,33 @@ import numpy as np
 from PySide6.QtCore import QPointF, Qt
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
-    QButtonGroup,
     QComboBox,
     QDialog,
     QDialogButtonBox,
     QLabel,
     QMessageBox,
-    QRadioButton,
     QVBoxLayout,
 )
 
 
-class LandmarkSemilandmarkDialog(QDialog):
-    def __init__(self, viewer, default_n=10):
+class CurveSelectionDialog(QDialog):
+    def __init__(self, viewer):
         super().__init__(viewer)
-        self.viewer = viewer
-        self.setWindowTitle("Select mode")
+        self.setWindowTitle("Select curve")
 
         layout = QVBoxLayout(self)
-        self.radio_group = QButtonGroup(self)
-        self.radio_landmarks = QRadioButton("Landmarks")
-        self.radio_semilandmarks = QRadioButton("Semilandmarks")
-        self.radio_semilandmarks.setChecked(True)
-
-        self.radio_group.addButton(self.radio_landmarks)
-        self.radio_group.addButton(self.radio_semilandmarks)
-
-        layout.addWidget(QLabel("Choose mode:"))
-        layout.addWidget(self.radio_landmarks)
-        layout.addWidget(self.radio_semilandmarks)
-
-        self.landmark_combo = QComboBox()
-        self.landmark_combo.addItems(self.viewer.landmark_names)
-        layout.addWidget(QLabel("Choose a landmark:"))
-        layout.addWidget(self.landmark_combo)
-
-        self.curva_combo = QComboBox()
-        self.curva_combo.addItems(self.viewer.semilandmarks.keys())
-        layout.addWidget(QLabel("Choose a curve:"))
-        layout.addWidget(self.curva_combo)
+        layout.addWidget(QLabel("Choose a configured curve:"))
+        self.curve_combo = QComboBox()
+        self.curve_combo.addItems(viewer.curves)
+        layout.addWidget(self.curve_combo)
 
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
 
-        self.radio_landmarks.toggled.connect(self.aggiorna_visibilita)
-        self.aggiorna_visibilita()
-
-    def aggiorna_visibilita(self):
-        landmark_attivo = self.radio_landmarks.isChecked()
-        self.landmark_combo.setEnabled(landmark_attivo)
-        self.curva_combo.setEnabled(not landmark_attivo)
-
-    def is_landmark_mode(self):
-        return self.radio_landmarks.isChecked()
-
-    def get_selected_landmark(self):
-        return self.landmark_combo.currentText()
-
-    def get_selected_curva(self):
-        return self.curva_combo.currentText()
+    def selected_curve_name(self):
+        return self.curve_combo.currentText()
 
 
 class SpezzataCurva:
@@ -75,11 +41,37 @@ class SpezzataCurva:
         self.qpoints = []
         self.active = False
         self.show_all_points = True
-        self.layer_name = "landmarks"
+        self.curve_name = None
 
     def start(self):
-        self.viewer.mode_label.setText("SEMI LANDMARKS MODE")
+        if not self.viewer.curves:
+            QMessageBox.warning(
+                self.viewer,
+                "Semilandmarks",
+                "Load a project that defines at least one curve first.",
+            )
+            return
 
+        dialog = CurveSelectionDialog(self.viewer)
+        if not dialog.exec():
+            return
+
+        curve_name = dialog.selected_curve_name()
+        curve = self.viewer.curves[curve_name]
+        start_name = curve["start_landmark"]
+        end_name = curve["end_landmark"]
+        start_coordinates = self.viewer.landmarks[start_name]["coordinates"]
+        end_coordinates = self.viewer.landmarks[end_name]["coordinates"]
+        if not start_coordinates or not end_coordinates:
+            QMessageBox.warning(
+                self.viewer,
+                "Semilandmarks",
+                "Place both curve anchor landmarks before tracing the curve.",
+            )
+            return
+
+        self.curve_name = curve_name
+        self.viewer.mode_label.setText(f"SEMI LANDMARKS MODE: {curve_name}")
         self.points = []
         self.qpoints = []
         self.active = True
@@ -87,73 +79,65 @@ class SpezzataCurva:
         self.viewer.selection_mode = False
         if self.viewer.insert_landmarks.active:
             self.viewer.insert_landmarks.deactivate()
-        QMessageBox.information(self.viewer, "Point entry", "Double-click to finish.")
+        self.viewer.layer_manager.clear_layer("preview")
+        QMessageBox.information(
+            self.viewer,
+            "Point entry",
+            f"Trace '{curve_name}' and double-click to finish.",
+        )
 
     def handle_click(self, pos: QPointF):
-        # converto QPointF in
         self.viewer.image.setCursor(Qt.CrossCursor)
-        pos_tupla = (pos.x(), pos.y())
-        self.points.append(pos_tupla)
-        self.qpoints.append(pos)
+        offset_x, offset_y = self.viewer.coordinate_display_offset
+        analytical_pos = QPointF(pos.x() - offset_x, pos.y() - offset_y)
+        self.points.append((analytical_pos.x(), analytical_pos.y()))
+        self.qpoints.append(analytical_pos)
         self.draw_preview()
 
     def handle_double_click(self):
-        # self.viewer.layer_manager.layers["preview"] = None
         if len(self.points) < 2:
             QMessageBox.warning(self.viewer, "Error", "Enter at least two points.")
             return
 
-        dialog = LandmarkSemilandmarkDialog(self.viewer, default_n=10)
-
-        if not dialog.exec():
+        if self.curve_name is None:
             return
 
-        if dialog.is_landmark_mode():
-            name = dialog.get_selected_landmark()
-            punti = self.straighten_polyline(self.qpoints)
-            self.viewer.landmarks[name]["coordinates"] = (punti[-1].x(), punti[-1].y())
-            print("POINT ADDED", self.viewer.landmarks[name]["coordinates"])
-            self.viewer.layer_manager.clear_layer(self.layer_name)
-            self.viewer.layer_manager.clear_layer(name)
-            self.viewer.layer_manager.draw_points(
-                name, punti, color=QColor(255, 0, 255, 255)
-            )
+        curve = self.viewer.curves[self.curve_name]
+        start_name = curve["start_landmark"]
+        end_name = curve["end_landmark"]
+        start_anchor = tuple(self.viewer.landmarks[start_name]["coordinates"])
+        end_anchor = tuple(self.viewer.landmarks[end_name]["coordinates"])
+        start_index = self.trova_punto_piu_vicino(start_anchor, self.points)
+        end_index = self.trova_punto_piu_vicino(end_anchor, self.points)
+        if start_index <= end_index:
+            traced_points = self.points[start_index : end_index + 1]
         else:
-            nome_spezzata = dialog.get_selected_curva()
-            nsemilandmarks = self.viewer.semilandmarks[nome_spezzata]["nsemilandmarks"][
-                0
-            ]
-            # -- Landmark da semilandmarks dict --
-            namelm1, namelm2 = self.viewer.semilandmarks[nome_spezzata]["landmarks"]
-            lm1 = self.viewer.landmarks[namelm1]["coordinates"]
-            lm2 = self.viewer.landmarks[namelm2]["coordinates"]
+            traced_points = list(reversed(self.points[end_index : start_index + 1]))
+        polyline = [start_anchor]
+        for point in traced_points:
+            if point != polyline[-1]:
+                polyline.append(point)
+        if end_anchor != polyline[-1]:
+            polyline.append(end_anchor)
+        try:
+            coordinates = self.interpolate_line_fixed_number(
+                polyline, curve["point_count"]
+            )
+        except ValueError as error:
+            QMessageBox.warning(self.viewer, "Semilandmarks", str(error))
+            return
+        self.viewer.semilandmarks[self.curve_name]["coordinates"] = coordinates
 
-            i1 = self.trova_punto_piu_vicino(lm1, self.points)
-            i2 = self.trova_punto_piu_vicino(lm2, self.points)
-            print("i1", i1, "i2", i2)
-            start = min(i1, i2)
-            end = max(i1, i2)
-            sottocurva = self.points[start : end + 1]
-            # salvo i semilandmarks nel dizionario
-            # Interpolazione sulla sottocurva
-            contorno_spezzato = self.interpolate_line_fixed_number(
-                sottocurva, nsemilandmarks
-            )
-            self.viewer.semilandmarks[nome_spezzata]["coordinates"] = contorno_spezzato
-            print("SEGMENTED CONTOUR", contorno_spezzato)
-            # trasformo lista di tuple in lista QPointF
-            contorno_punti = [QPointF(x, y) for x, y in contorno_spezzato]
-            print("CONTOUR POINTS", contorno_punti)
-            self.viewer.layer_manager.clear_layer(self.layer_name)
-            self.viewer.layer_manager.draw_points(
-                self.layer_name, contorno_punti, color=self.color_points
-            )
-            self.viewer.layer_manager.draw_lines(
-                nome_spezzata, contorno_spezzato, color=self.color_points
-            )
-            self.viewer.layer_manager.update_display()
-            print(self.viewer.semilandmarks)
+        curve_layer = f"curve:{self.curve_name}"
+        self.viewer.layer_manager.clear_layer(curve_layer)
+        self.viewer.layer_manager.draw_lines(
+            curve_layer, coordinates, color=self.color_points
+        )
+        self.viewer.layer_manager.create_layer("semilandmarks")
+        self.viewer.layer_manager.clear_layer("preview")
+        self.viewer.layer_manager.update_display()
         self.active = False
+        self.curve_name = None
 
         self.viewer.mode_label.setText("")
 
@@ -165,8 +149,6 @@ class SpezzataCurva:
         )
 
     def trova_punto_piu_vicino(self, punto, contorno):
-        # trasformo lista di QPointF in lista di tupla
-        # punti_tuple = [(pt.x(), pt.y()) for pt in contorno]
         A = np.array(contorno)
         B = np.ones_like(A) * punto
         diff = A - B
@@ -175,41 +157,39 @@ class SpezzataCurva:
         return indice
 
     def interpolate_line_fixed_number(self, points, n):
-        """Restituisce n+1 punti equidistanti lungo la spezzata definita da `points`."""
-        # Calcola le distanze tra i punti consecutivi
-        segmenti = list(zip(points[:-1], points[1:]))
-        distanze = [hypot(p2[0] - p1[0], p2[1] - p1[1]) for p1, p2 in segmenti]
-        lunghezza_totale = sum(distanze)
+        """Return n + 1 equally spaced points along a polyline."""
 
-        step = lunghezza_totale / n
+        segments = []
+        total_length = 0.0
+        for start, end in zip(points[:-1], points[1:]):
+            length = hypot(end[0] - start[0], end[1] - start[1])
+            if length == 0:
+                continue
+            segments.append((start, end, length))
+            total_length += length
+        if total_length == 0:
+            raise ValueError("The traced curve must have a non-zero length.")
 
-        new_points = [points[0]]
-        i = 0
-        acc = 0.0
-
-        while i < len(points) - 1:
-            p1 = points[i]
-            p2 = points[i + 1]
-            dx = p2[0] - p1[0]
-            dy = p2[1] - p1[1]
-            d = hypot(dx, dy)
-
-            if d + acc >= step:
-                t = (step - acc) / d
-                new_x = p1[0] + t * dx
-                new_y = p1[1] + t * dy
-                new_point = (new_x, new_y)
-                new_points.append(new_point)
-                points[i] = (new_x, new_y)  # aggiornamento temporaneo
-                acc = 0.0
-            else:
-                acc += d
-                i += 1
-
-        if len(new_points) < n + 1:
-            new_points.append(points[-1])
-        print("NEW POINTS", new_points)
-        return new_points
+        sampled_points = []
+        segment_index = 0
+        length_before_segment = 0.0
+        for point_index in range(n + 1):
+            target_length = total_length * point_index / n
+            while (
+                segment_index < len(segments) - 1
+                and target_length > length_before_segment + segments[segment_index][2]
+            ):
+                length_before_segment += segments[segment_index][2]
+                segment_index += 1
+            start, end, length = segments[segment_index]
+            ratio = (target_length - length_before_segment) / length
+            sampled_points.append(
+                (
+                    start[0] + ratio * (end[0] - start[0]),
+                    start[1] + ratio * (end[1] - start[1]),
+                )
+            )
+        return sampled_points
 
     def straighten_polyline(self, points):
         if len(points) < 2:

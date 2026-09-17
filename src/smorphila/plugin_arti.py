@@ -1,5 +1,6 @@
 from PySide6.QtGui import QColor
 from PySide6.QtCore import QPointF, Qt
+import copy
 import math
 
 
@@ -9,12 +10,26 @@ class ArtiPlugin:
         self.active = False
 
     def activate(self):
+        raw_landmarks = (
+            copy.deepcopy(self.viewer.landmarks)
+            if self.viewer.landmarks_raw is None
+            else None
+        )
+        if not self.viewer.apply_reference_axis_alignment():
+            return
+        if raw_landmarks is not None:
+            self.viewer.landmarks_raw = raw_landmarks
         self.active = True
         self.viewer.disattiva_zoom()
         self.viewer.image.setCursor(Qt.CrossCursor)
         # self.nomi = self.viewer.landmark_names
         LD_groups = list(self.viewer.landmarks_groups.keys())
-        for layer_name in ["landmarks", "spezzata", "axis_definition"]:
+        for layer_name in [
+            "landmarks",
+            "landmarks_raw",
+            "spezzata",
+            "axis_definition",
+        ]:
             if layer_name in self.viewer.layer_manager.visible:
                 self.viewer.layer_manager.visible[layer_name] = False
 
@@ -29,7 +44,7 @@ class ArtiPlugin:
             group_data = self.viewer.landmarks_groups[gruppo]
             segments = group_data.get("segments")
             if segments is not None:
-                self._draw_segment_group(segments)
+                self._draw_segment_group(group_data)
                 continue
             landmark_names = group_data["landmarks"]
             angoli = group_data["angles"]
@@ -60,24 +75,68 @@ class ArtiPlugin:
             else:
                 self.viewer.layer_manager.draw_lines("spezzata_idealizzata", punti, color=QColor(0, 255, 0, 180))
 
-    def _draw_segment_group(self, segments):
-        """Draw a group stored as independent oriented landmark segments."""
-        for segment in segments:
+    def _draw_segment_group(self, group_data):
+        """Apply the group's imposed angles while preserving segment lengths."""
+
+        segments = group_data.get("segments", [])
+        angles = group_data.get("angles", [])
+        original_points = {
+            name: tuple(data["coordinates"])
+            for name, data in self.viewer.landmarks.items()
+            if data.get("coordinates")
+        }
+        headings = {}
+        for index, segment in enumerate(segments):
             if not isinstance(segment, (list, tuple)) or len(segment) != 2:
                 continue
-            try:
-                points = self.get_landmark_points_by_names(
-                    self.viewer.landmarks, list(segment)
-                )
-            except ValueError as error:
-                print("Error:", error)
+            start, end = segment
+            if start not in original_points or end not in original_points:
                 continue
-            qpoints = [QPointF(point[0], point[1]) for point in points]
+            start_point = self.viewer.landmarks[start]["coordinates"]
+            source_start = original_points[start]
+            source_end = original_points[end]
+            length = math.hypot(
+                source_end[0] - source_start[0], source_end[1] - source_start[1]
+            )
+            original_heading = math.degrees(
+                math.atan2(
+                    -(source_end[1] - source_start[1]),
+                    source_end[0] - source_start[0],
+                )
+            )
+            angle = angles[index] if index < len(angles) else None
+            incoming_index = next(
+                (
+                    previous_index
+                    for previous_index, previous_segment in reversed(
+                        list(enumerate(segments[:index]))
+                    )
+                    if previous_segment[1] == start
+                ),
+                None,
+            )
+            if angle is None or (isinstance(angle, str) and angle.lower() == "free"):
+                heading = original_heading
+            elif incoming_index is None or incoming_index not in headings:
+                heading = 90 + float(angle)
+            else:
+                heading = headings[incoming_index] + float(angle)
+            radians = math.radians(heading)
+            end_point = (
+                start_point[0] + length * math.cos(radians),
+                start_point[1] - length * math.sin(radians),
+            )
+            self.viewer.landmarks[end]["coordinates"] = end_point
+            headings[index] = heading
             self.viewer.layer_manager.draw_points(
-                "spezzata_idealizzata", qpoints, color=QColor(255, 0, 0, 180)
+                "spezzata_idealizzata",
+                [QPointF(*start_point), QPointF(*end_point)],
+                color=QColor(255, 0, 0, 180),
             )
             self.viewer.layer_manager.draw_lines(
-                "spezzata_idealizzata", points, color=QColor(0, 255, 0, 180)
+                "spezzata_idealizzata",
+                [start_point, end_point],
+                color=QColor(0, 255, 0, 180),
             )
 
     def get_landmark_points_by_names(self, landmark_dict: dict, names: list[str]) -> list[tuple]:
