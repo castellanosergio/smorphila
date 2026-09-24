@@ -104,6 +104,7 @@ class LayerManager:
             self.update_display()
 
     def update_display(self):
+        self.viewer.refresh_landmark_choices()
         if self.viewer.pixmap is None:
             return
 
@@ -126,17 +127,8 @@ class LayerManager:
                 continue
 
             if name == "landmarks":
-                # Disegna i landmark dal dizionario (non dal QPixmap del layer)
-                punti = []
-                for nome, info in self.viewer.landmarks.items():
-                    coord = info.get("coordinates")
-                    if coord:
-                        punti.append(self._display_point(tuple(coord)))
-
-                painter.setBrush(QColor(255, 0, 0, 180))
-                painter.setPen(Qt.NoPen)
-                for pt in punti:
-                    painter.drawEllipse(pt, radius, radius)
+                # Draw named landmarks after scaling to keep their size readable.
+                continue
 
             elif name == "landmarks_raw":
                 punti = []
@@ -172,6 +164,28 @@ class LayerManager:
         # Ritaglia la porzione visibile e scala
         cropped = composed.copy(self.viewer.view_rect)
         scaled = cropped.scaled(self.viewer.scroll_area.viewport().size(), Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        if "landmarks" in self.layers and self.visible.get("landmarks", True):
+            painter = QPainter(scaled)
+            painter.setRenderHint(QPainter.Antialiasing)
+            scale_x = scaled.width() / self.viewer.view_rect.width()
+            scale_y = scaled.height() / self.viewer.view_rect.height()
+            selected_name = self.viewer.landmark_combo.currentData()
+            for name, info in self.viewer.landmarks.items():
+                coordinates = info.get("coordinates")
+                if not coordinates:
+                    continue
+                point = self._display_point(tuple(coordinates))
+                point = QPointF(
+                    (point.x() - self.viewer.view_rect.x()) * scale_x,
+                    (point.y() - self.viewer.view_rect.y()) * scale_y,
+                )
+                color = QColor("#42d66b" if name == selected_name else "#ff4545")
+                painter.setPen(QPen(Qt.black, 1))
+                painter.setBrush(color)
+                painter.drawEllipse(point, 6, 6)
+                painter.setPen(QPen(Qt.white, 1))
+                painter.drawText(point + QPointF(8, -8), name)
+            painter.end()
         self.viewer.scaled_pixmap = scaled
         self.viewer.image.setPixmap(scaled)
 

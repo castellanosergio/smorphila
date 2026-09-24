@@ -42,8 +42,8 @@ from .insert_landmarks import LandmarkPlugin
 from .layer_manager import LayerManager
 from .layers_management import LayerPlugin
 from .limbs import ArtiPlugin
-from .plugin_allinea_spezzata_ols import SpezzataAligner
 from .polyline_curve import SpezzataCurva
+from .polyline_curve_ols import SpezzataAligner
 from .project_store import load_project
 
 __version__ = "0.0.4"
@@ -85,7 +85,7 @@ class ClickableLabel(QLabel):
 
         elif self.viewer.insert_landmarks.active:
             mapped = self.map_to_pixmap_coordinates(event.position())
-            name = self.viewer.landmark_combo.currentText()
+            name = self.viewer.landmark_combo.currentData()
 
             self.viewer.insert_landmarks.handle_click(name, mapped)
             self.viewer.setCursor(Qt.CrossCursor)
@@ -307,7 +307,7 @@ class ImageViewer(QMainWindow):
         grid.addWidget(self.scaling_mode, 8, 1, 1, 1)
 
         self.landmark_combo = QComboBox()
-        self.landmark_combo.addItems(self.landmark_names)
+        self.refresh_landmark_choices()
         grid.addWidget(QLabel("Landmarks"), 8, 2, 1, 1)
         grid.addWidget(self.landmark_combo, 8, 3, 1, 1)
 
@@ -372,6 +372,9 @@ class ImageViewer(QMainWindow):
 
         # Plugins: layer manager and tools
         self.layer_manager = LayerManager(self)
+        self.landmark_combo.currentIndexChanged.connect(
+            lambda _index: self.layer_manager.update_display()
+        )
         self.spezzata_plugin = SpezzataAligner(self)
         self.insert_landmarks = LandmarkPlugin(self)
         self.image_aligner = ImageAligner(self)
@@ -676,8 +679,7 @@ class ImageViewer(QMainWindow):
             for name, curve in curves.items()
         }
         self.landmarks = landmarks
-        self.landmark_combo.clear()
-        self.landmark_combo.addItems(self.landmark_names)
+        self.refresh_landmark_choices()
         self.project_path = (
             project_path if project_path.suffix.lower() == ".json" else None
         )
@@ -879,6 +881,30 @@ class ImageViewer(QMainWindow):
         self.file_path = pl.Path(file_name)
 
         self.scale_label.setText("")
+
+    def refresh_landmark_choices(self):
+        """Show placement status while keeping landmark names as item data."""
+        selected_name = self.landmark_combo.currentData()
+        signals_blocked = self.landmark_combo.blockSignals(True)
+        try:
+            names = list(self.landmarks)
+            if names != [
+                self.landmark_combo.itemData(index)
+                for index in range(self.landmark_combo.count())
+            ]:
+                self.landmark_combo.clear()
+                for name in names:
+                    self.landmark_combo.addItem(name, name)
+                selected_index = self.landmark_combo.findData(selected_name)
+                if selected_index >= 0:
+                    self.landmark_combo.setCurrentIndex(selected_index)
+            for index, name in enumerate(names):
+                state = (
+                    "placed" if self.landmarks[name].get("coordinates") else "not placed"
+                )
+                self.landmark_combo.setItemText(index, f"{name} ({state})")
+        finally:
+            self.landmark_combo.blockSignals(signals_blocked)
 
     def init_landmarks(self, names):
         """
