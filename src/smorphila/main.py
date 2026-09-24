@@ -90,9 +90,7 @@ class ProjectHub(QMainWindow):
         self.acquire_button.clicked.connect(
             lambda: self._launch_tool("data_acquisition")
         )
-        self.export_button.clicked.connect(
-            lambda: self._launch_tool("smorphila_export_project")
-        )
+        self.export_button.clicked.connect(lambda: self._launch_tool("export"))
         self.review_records_button.clicked.connect(self._review_inconsistent_records)
         layout.addWidget(self.define_button)
         layout.addWidget(self.acquire_button)
