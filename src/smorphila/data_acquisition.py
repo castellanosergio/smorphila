@@ -2,8 +2,8 @@
 main program of smorphila package
 """
 
-import json
 import copy
+import json
 import pathlib as pl
 import sys
 import tomllib
@@ -39,10 +39,10 @@ from . import save_data
 from .image_aligner import ImageAligner
 from .insert_landmarks import LandmarkPlugin
 from .layer_manager import LayerManager
+from .layers_management.py import LayerPlugin
 from .plugin_allinea_spezzata_ols import SpezzataAligner
 from .plugin_arti import ArtiPlugin
 from .plugin_calibrazione import CalibrationPlugin
-from .plugin_gestione_layers import LayerPlugin
 from .plugin_spezzata_curva import SpezzataCurva
 from .project_store import load_project
 from .rileva_contorno import ContourPlugin
@@ -319,7 +319,7 @@ class ImageViewer(QMainWindow):
         self.selection_mode = False
 
         self.central_widget.setLayout(grid)
-        self.setWindowTitle(f"SMORPHILA - v. {__version__} {__version_date__}")
+        self.setWindowTitle("SMORPHILA - Data acquisition")
         self.resize(1000, 700)
 
         self.menu_bar = QMenuBar(self)
@@ -721,9 +721,7 @@ class ImageViewer(QMainWindow):
                 f"Image loaded: {self.code} (no json file found)"
             )
 
-        self.setWindowTitle(
-            f"{pl.Path(file_path).name} - Morphometric analysis - v. {__version__}"
-        )
+        self.setWindowTitle(f"SMORPHILA - Data acquisition - {pl.Path(file_path).name}")
 
     def apply_reference_axis_alignment(self) -> bool:
         """Align all placed landmarks using the configured reference axis."""
@@ -792,10 +790,12 @@ class ImageViewer(QMainWindow):
         if not isinstance(raw_landmarks, dict):
             raw_landmarks = landmarks_json
         self.landmarks_raw = copy.deepcopy(raw_landmarks)
-        rebuild_idealized_polyline = (
-            isinstance(self.reference_axis, dict) and bool(self.landmarks_groups)
+        rebuild_idealized_polyline = isinstance(self.reference_axis, dict) and bool(
+            self.landmarks_groups
         )
-        loaded_landmarks = raw_landmarks if rebuild_idealized_polyline else landmarks_json
+        loaded_landmarks = (
+            raw_landmarks if rebuild_idealized_polyline else landmarks_json
+        )
         self.layer_manager.create_layer("landmarks")
         self.layer_manager.create_layer("landmarks_raw")
         self.layer_manager.visible["landmarks"] = True

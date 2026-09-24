@@ -1,4 +1,12 @@
-from PySide6.QtWidgets import QDialog, QVBoxLayout, QComboBox, QPushButton, QHBoxLayout, QLabel
+from PySide6.QtWidgets import (
+    QComboBox,
+    QDialog,
+    QHBoxLayout,
+    QLabel,
+    QPushButton,
+    QVBoxLayout,
+)
+
 
 class LayerPlugin:
     def __init__(self, viewer):
@@ -8,6 +16,7 @@ class LayerPlugin:
         dialog = LayerManagerDialog(self.viewer)
         self.viewer.disattiva_zoom()
         dialog.exec()
+
 
 class LayerManagerDialog(QDialog):
     def __init__(self, viewer):
@@ -46,7 +55,7 @@ class LayerManagerDialog(QDialog):
         self.btn_cancella.clicked.connect(self.cancella_layer)
         self.ok_button.clicked.connect(self.update_layers)
 
-    def get_layer_names(self): 
+    def get_layer_names(self):
         return self.viewer.layer_manager.layers
 
     def get_selected_layer(self):
@@ -59,7 +68,7 @@ class LayerManagerDialog(QDialog):
     def attiva_layer(self):
         layer = self.get_selected_layer()
         self.viewer.layer_manager.toggle_visibility(layer)
-        #print(f"Layer '{layer}' attivato")
+        # print(f"Layer '{layer}' attivato")
 
     def ripulisci_layer(self):
         layer = self.get_selected_layer()
@@ -68,7 +77,7 @@ class LayerManagerDialog(QDialog):
         if layer == "landmarks":
             for dati in self.viewer.landmarks.values():
                 dati["coordinates"] = None
-            #print(self.viewer.landmarks)
+            # print(self.viewer.landmarks)
             self.viewer.landmark_combo.setCurrentIndex(0)
         self.update_layers()
 
