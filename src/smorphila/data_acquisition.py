@@ -35,15 +35,15 @@ from PySide6.QtWidgets import (
 )
 
 from . import save_data
+from .calibration import CalibrationPlugin
 from .contour import ContourPlugin
 from .image_aligner import ImageAligner
 from .insert_landmarks import LandmarkPlugin
 from .layer_manager import LayerManager
 from .layers_management import LayerPlugin
+from .limbs import ArtiPlugin
 from .plugin_allinea_spezzata_ols import SpezzataAligner
-from .plugin_arti import ArtiPlugin
-from .plugin_calibrazione import CalibrationPlugin
-from .plugin_spezzata_curva import SpezzataCurva
+from .polyline_curve import SpezzataCurva
 from .project_store import load_project
 
 __version__ = "0.0.4"
