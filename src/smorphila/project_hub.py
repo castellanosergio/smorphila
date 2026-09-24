@@ -86,9 +86,7 @@ class ProjectHub(QMainWindow):
         self.acquire_button = QPushButton("Acquire data")
         self.export_button = QPushButton("Export data")
         self.review_records_button = QPushButton("Review inconsistent records")
-        self.define_button.clicked.connect(
-            lambda: self._launch_tool("landmark_editor_sergio3")
-        )
+        self.define_button.clicked.connect(lambda: self._launch_tool("landmark_editor"))
         self.acquire_button.clicked.connect(lambda: self._launch_tool("main"))
         self.export_button.clicked.connect(
             lambda: self._launch_tool("smorphila_export_project")
