@@ -46,7 +46,7 @@ class ProjectHub(QMainWindow):
         super().__init__()
         self.project_path: pl.Path | None = None
         self.inconsistent_records: dict[str, list[str]] = {}
-        self.setWindowTitle("SMORPHILA - Project hub")
+        self.setWindowTitle("SMORPHILA")
         self.resize(480, 320)
         self._build_interface()
         if project_path is not None:
