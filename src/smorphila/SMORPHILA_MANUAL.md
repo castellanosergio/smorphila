@@ -3,12 +3,12 @@
 SMORPHILA manages a morphometric project from definition to acquisition and export.
 The normal starting point is the Project Hub.
 
-## Start the Project Hub
+## Start SMORPHILA
 
 From the `smorphila` folder, run:
 
 ```powershell
-uv run project_hub.py
+uv run main.py
 ```
 
 Use the hub to create or open a project, define its structure, acquire individual

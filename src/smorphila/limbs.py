@@ -25,7 +25,6 @@ class ArtiPlugin:
         # self.nomi = self.viewer.landmark_names
         LD_groups = list(self.viewer.landmarks_groups.keys())
         for layer_name in [
-            "landmarks",
             "landmarks_raw",
             "spezzata",
             "axis_definition",

@@ -1,6 +1,6 @@
 [project]
 name = "smorphila"
-version = "0.0.4"
+version = "0.1.0"
 description = "Software for MORPHometric Image Landmark Acquisition"
 authors = [{ name="Sergio Castellano", email="sergio.castellano@unito.it" }, { name="Olivier Friard", email="olivier.friard@unito.it" }]
 readme = "README.md"
@@ -24,12 +24,12 @@ classifiers=[
         "Operating System :: OS Independent"
     ]
 
-[project.scripts]
-morfometria = "morfometria.main:run"
-
 [[tool.uv.index]]
 name = "pypi"
 url = "https://pypi.org/simple/"
 publish-url = "https://upload.pypi.org/legacy/"
 explicit = true
+
+[project.gui-scripts]
+smorphila = "smorphila.main:run"
 

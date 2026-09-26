@@ -344,6 +344,7 @@ class ImageViewer(QMainWindow):
         file_menu.addAction(save_data_action)
 
         constrained_landmarks_action = QAction("Show constrained landmarks", self)
+        self.constrained_landmarks_action = constrained_landmarks_action
         constrained_landmarks_action.setCheckable(True)
         constrained_landmarks_action.setChecked(True)
         constrained_landmarks_action.triggered.connect(
@@ -840,12 +841,15 @@ class ImageViewer(QMainWindow):
             )
             self.raw_to_display_transform = d.get("raw_to_display_transform")
 
+        self._set_layer_visibility("landmarks", True)
         if self.scale:
             self.scale_label.setText(f"Scale: {self.scale:.4f} {self.scale_unit}/px")
 
     def _set_layer_visibility(self, name: str, visible: bool):
         if name in self.layer_manager.layers:
             self.layer_manager.visible[name] = visible
+            if name == "landmarks":
+                self.constrained_landmarks_action.setChecked(visible)
             self.layer_manager.update_display()
 
     def load_image(self, file_name):
@@ -1043,6 +1047,7 @@ class ImageViewer(QMainWindow):
             self.scaled_pixmap = scaled
             self.image.setPixmap(scaled)
             self.disattiva_zoom()
+            self.layer_manager.update_display()
 
     def disattiva_zoom(self):
         self.selection_mode = False

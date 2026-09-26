@@ -194,11 +194,14 @@ class ProjectHub(QMainWindow):
     def _launch_tool(self, module: str):
         if self.project_path is None:
             return
-        package_root = pl.Path(__file__).resolve().parent.parent
         try:
             subprocess.Popen(
-                [sys.executable, "-m", f"smorphila.{module}", str(self.project_path)],
-                cwd=package_root,
+                [
+                    sys.executable,
+                    "-m",
+                    f"smorphila.{module}",
+                    str(self.project_path.resolve()),
+                ],
             )
         except OSError as error:
             QMessageBox.critical(self, "Launch tool", str(error))
