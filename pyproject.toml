@@ -24,6 +24,13 @@ classifiers=[
         "Operating System :: OS Independent"
     ]
 
+[project.urls]
+Homepage = "https://github.com/castellanosergio/smorphila"
+Documentation = "https://github.com/castellanosergio/smorphila/blob/main/SMORPHILA_user_guide.md"
+Source_code = "https://github.com/castellanosergio/smorphila"
+Issues = "https://github.com/castellanosergio/smorphila/issues"
+
+
 [[tool.uv.index]]
 name = "pypi"
 url = "https://pypi.org/simple/"
@@ -32,4 +39,3 @@ explicit = true
 
 [project.gui-scripts]
 smorphila = "smorphila.main:run"
-
