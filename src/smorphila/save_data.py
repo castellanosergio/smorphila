@@ -4,10 +4,8 @@ Save data
 
 from PySide6.QtWidgets import QInputDialog, QMessageBox
 from pathlib import Path
-import re
 import json
 import os
-import copy
 
 from .project_store import definition_signature, load_project, save_project
 
@@ -50,11 +48,11 @@ def save_data_json(viewer):
     code = viewer.code
 
     while True:
-        # ask for code
+        # Ask for a filename-safe identifier.
         code, ok = QInputDialog.getText(
             None,
-            "Enter individual info",
-            "Code and date (CODE_NN_YYYY-MM-DD):",
+            "Save data",
+            "File name:",
             text=code,
         )
         if not ok:
@@ -65,66 +63,32 @@ def save_data_json(viewer):
             )
             return
 
-        if not code:
-            QMessageBox.critical(None, "Warning", "The code is mandatory")
+        code = code.strip()
+        if not code or code in {".", ".."}:
+            QMessageBox.critical(None, "Warning", "The file name is mandatory")
             continue
 
-        if " " in code:
-            QMessageBox.critical(None, "Warning", "The code cannot contain space")
-            continue
-
-        # check code
-        if code.count("_") < 2:
-            QMessageBox.critical(None, "Warning", "The code must contain almost 2 _ ")
-            continue
-
-        # Regex pattern for YYYY-MM-DD
-        pattern = r"_\d{4}-\d{2}-\d{2}\b"
-
-        if not re.search(pattern, code):
+        if Path(code).name != code or any(
+            character in code for character in '<>:"/\\|?*'
+        ):
             QMessageBox.critical(
-                None, "Warning", "The code does not contain a date in YYYY-MM-DD format"
+                None,
+                "Warning",
+                "The file name contains invalid characters.",
             )
             continue
 
         break
 
-    # ask for mass
-    mass_value, ok = QInputDialog.getDouble(
-        None,  # parent widget
-        "Enter the mass value",  # dialog title
-        "Mass (in g):",  # label text
-        value=viewer.mass_value,  # default value
-        minValue=0.0,  # minimum allowed value
-        maxValue=100.0,  # maximum allowed value
-        decimals=2,  # number of decimal places
-    )
-
-    if not ok:
-        QMessageBox.information(
-            None,
-            "Warning",
-            "Data not saved",
-        )
-        return
-
     data = {
-        "mass_value": mass_value,
         "code": code,
-        "angle_deg": viewer.angle_deg,
-        "reference_axis_aligned": viewer.reference_axis_aligned,
-        "coordinate_display_offset": viewer.coordinate_display_offset,
-        "raw_to_display_transform": viewer.raw_to_display_transform,
         # "image_file_name": viewer.nome_file,
         # "directory_path": viewer.DIR_PNG,
         "scale": viewer.scale,
         "scale_unit": viewer.scale_unit,
-        "landmarks_raw": copy.deepcopy(
-            viewer.landmarks_raw
-            if viewer.landmarks_raw is not None
-            else viewer.landmarks
-        ),
-        "landmarks": viewer.landmarks,
+        "landmarks": viewer.landmarks_raw
+        if viewer.landmarks_raw is not None
+        else viewer.landmarks,
         "semilandmarks": viewer.semilandmarks,
     }
 

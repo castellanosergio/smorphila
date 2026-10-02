@@ -75,7 +75,7 @@ class ImageAligner:
             )
             return
 
-        # Allineamento con asse Y verso l'alto
+        # Keep the second reference landmark visually above the origin.
         angle_rad = math.atan2(-dx, -dy)
         angle_deg = math.degrees(angle_rad)
         if self.viewer.angle_deg:

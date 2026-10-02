@@ -21,6 +21,11 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+try:
+    from .coordinate_pipeline import derive_coordinates, legacy_semilandmarks_to_raw
+except ImportError:  # Support running this module directly.
+    from coordinate_pipeline import derive_coordinates, legacy_semilandmarks_to_raw
+
 
 # ============================================================
 # 1. READ JSON PROJECT
@@ -56,6 +61,26 @@ def read_project(json_path):
         raise ValueError(
             "The 'individuals' section must be a dictionary."
         )
+
+    definitions = project.get("definitions", {})
+    for individual in project["individuals"].values():
+        if not isinstance(individual, dict):
+            continue
+        raw_landmarks = individual.get("landmarks_raw", individual.get("landmarks", {}))
+        raw_semilandmarks = individual.get("semilandmarks", {})
+        if "landmarks_raw" in individual:
+            raw_semilandmarks = legacy_semilandmarks_to_raw(
+                raw_semilandmarks,
+                individual.get("raw_to_display_transform"),
+                individual.get("coordinate_display_offset", [0.0, 0.0]),
+            )
+        landmarks, semilandmarks = derive_coordinates(
+            raw_landmarks,
+            raw_semilandmarks,
+            definitions,
+        )
+        individual["landmarks"] = landmarks
+        individual["semilandmarks"] = semilandmarks
 
     return project
 

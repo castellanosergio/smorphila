@@ -30,8 +30,19 @@ class LandmarkPlugin:
 
     def handle_click(self, name, pos):
         self.viewer.image.setCursor(Qt.CrossCursor)
-        # Save the (x, y) tuple in the dictionary
-        self.viewer.landmarks[name]["coordinates"] = (pos.x(), pos.y())
+        # Persist only original image-pixel coordinates.
+        if self.viewer.reference_axis_aligned:
+            offset_x, offset_y = self.viewer.coordinate_display_offset
+            analytical_point = QPointF(pos.x() - offset_x, pos.y() - offset_y)
+            self.viewer.landmarks[name]["coordinates"] = (
+                analytical_point.x(), analytical_point.y()
+            )
+            self.viewer.landmarks_raw[name]["coordinates"] = (
+                self.viewer.analytical_to_raw_point(analytical_point)
+            )
+        else:
+            self.viewer.landmarks[name]["coordinates"] = (pos.x(), pos.y())
+            self.viewer.landmarks_raw[name]["coordinates"] = (pos.x(), pos.y())
         # print("----", self.viewer.landmarks)
         # Build the list of existing coordinates
         coordinate_punti = [

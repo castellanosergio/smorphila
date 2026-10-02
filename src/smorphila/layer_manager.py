@@ -33,7 +33,7 @@ class LayerManager:
     def _raw_display_point(self, point):
         transform = getattr(self.viewer, "raw_to_display_transform", None)
         if not isinstance(transform, dict):
-            return None
+            return self._display_point(point)
         x, y = point
         return QPointF(
             transform["m11"] * x + transform["m21"] * y + transform["dx"],
@@ -156,11 +156,12 @@ class LayerManager:
                 punti = []
                 for nome, info in self.viewer.semilandmarks.items():
                     punti = info.get("coordinates")
-                    print(f"points: {punti}")
                     painter.setBrush(QColor(0, 255, 0, 180))
                     painter.setPen(Qt.NoPen)
                     for pt in punti:
-                        pt = self._display_point(tuple(pt))
+                        pt = self._raw_display_point(tuple(pt))
+                        if pt is None:
+                            continue
                         painter.drawEllipse(pt, radius, radius)
 
             else:
