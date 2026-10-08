@@ -678,6 +678,7 @@ class ImageViewer(QMainWindow):
             for name, curve in curves.items()
         }
         self.landmarks = landmarks
+        self.landmarks_raw = copy.deepcopy(landmarks)
         self.refresh_landmark_choices()
         self.project_path = (
             project_path if project_path.suffix.lower() == ".json" else None
@@ -1071,6 +1072,7 @@ class ImageViewer(QMainWindow):
 
     def reset(self):
         self.init_landmarks(self.landmark_names)
+        self.landmarks_raw = copy.deepcopy(self.landmarks)
         self.layer_manager.update_display()
 
     def save_data(self):
@@ -1130,6 +1132,7 @@ class ImageViewer(QMainWindow):
 
         # Landmarks: reset the structure
         self.init_landmarks(self.landmark_names)
+        self.landmarks_raw = copy.deepcopy(self.landmarks)
 
         # Deactivate plugins
         self.disattiva_tutti_i_plugin()

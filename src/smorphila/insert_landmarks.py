@@ -32,6 +32,11 @@ class LandmarkPlugin:
 
     def handle_click(self, name, pos):
         self.viewer.image.setCursor(Qt.CrossCursor)
+        if not isinstance(self.viewer.landmarks_raw, dict):
+            self.viewer.landmarks_raw = {}
+        self.viewer.landmarks_raw.setdefault(
+            name, {"coordinates": None, "color": None}
+        )
         # Persist only original image-pixel coordinates.
         if self.viewer.reference_axis_aligned:
             offset_x, offset_y = self.viewer.coordinate_display_offset
