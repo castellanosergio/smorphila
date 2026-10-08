@@ -31,7 +31,7 @@ from smorphila.landmark_editor import (
     trigonometric_heading,
     validate_definitions,
 )
-from smorphila.plugin_arti import ArtiPlugin
+from smorphila.limbs import ArtiPlugin
 
 
 class AngleChoiceTest(unittest.TestCase):

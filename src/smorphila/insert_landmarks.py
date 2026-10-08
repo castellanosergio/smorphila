@@ -14,6 +14,8 @@ class LandmarkPlugin:
         self.viewer.disattiva_zoom()
         self.viewer.image.setCursor(Qt.CrossCursor)
         self.viewer.image.setFocus()
+        self.viewer.layer_manager.create_layer("landmarks")
+        self.viewer._set_layer_visibility("landmarks", True)
 
         self.viewer.mode_label.setText("ADD LANDMARKS MODE")
 
@@ -54,6 +56,7 @@ class LandmarkPlugin:
         # Draw the points on the layer
         if "landmarks" not in self.viewer.layer_manager.layers:
             self.viewer.layer_manager.create_layer("landmarks")
+        self.viewer._set_layer_visibility("landmarks", True)
 
         self.viewer.layer_manager.clear_layer("landmarks")
         lista_qpointf = []
