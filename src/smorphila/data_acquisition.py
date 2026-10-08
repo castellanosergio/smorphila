@@ -865,8 +865,6 @@ class ImageViewer(QMainWindow):
             action.setChecked(visible)
         if name in self.layer_manager.layers:
             self.layer_manager.visible[name] = visible
-            if name == "landmarks":
-                self.constrained_landmarks_action.setChecked(visible)
             self.layer_manager.update_display()
 
     def analytical_to_raw_point(self, point: QPointF) -> tuple[float, float]:
