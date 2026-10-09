@@ -794,7 +794,9 @@ class ImageViewer(QMainWindow):
                 "Place both reference-axis landmarks before creating the idealized polyline.",
             )
             return False
-        self.image_aligner.align_project_reference_axis(landmark_names)
+        self.image_aligner.align_project_reference_axis(
+            landmark_names, axis.get("angle_from_vertical", 0)
+        )
         self.reference_axis_aligned = True
         return True
 

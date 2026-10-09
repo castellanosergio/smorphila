@@ -10,9 +10,11 @@ class ImageAligner:
         self.points = []
         self.active = False
         self.reference_landmarks = None
+        self.reference_axis_angle = 0
 
     def align_image(self):
         self.reference_landmarks = None
+        self.reference_axis_angle = 0
         self._start_alignment(
             "Click the point to use as the origin (0,0), then click a second point to define the Y-axis direction."
         )
@@ -21,14 +23,16 @@ class ImageAligner:
         """Align a new image using the two project reference-axis landmarks."""
 
         self.reference_landmarks = landmark_names
+        self.reference_axis_angle = 0
         self._start_alignment(
             f"Click reference landmark '{landmark_names[0]}', then '{landmark_names[1]}'."
         )
 
-    def align_project_reference_axis(self, landmark_names):
+    def align_project_reference_axis(self, landmark_names, angle_from_vertical=0):
         """Align an image from already placed reference-axis landmarks."""
 
         self.reference_landmarks = landmark_names
+        self.reference_axis_angle = float(angle_from_vertical)
         self.points = [
             QPointF(*self.viewer.landmarks[name]["coordinates"])
             for name in landmark_names
@@ -75,9 +79,10 @@ class ImageAligner:
             )
             return
 
-        # Keep the second reference landmark visually above the origin.
-        angle_rad = math.atan2(-dx, -dy)
-        angle_deg = math.degrees(angle_rad)
+        # The stored angle is measured counterclockwise from image vertical.
+        current_heading = math.degrees(math.atan2(-dy, dx))
+        target_heading = 90 + getattr(self, "reference_axis_angle", 0)
+        angle_deg = current_heading - target_heading
         if self.viewer.angle_deg:
             self.viewer.angle_deg += angle_deg
         else:
