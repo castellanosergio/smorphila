@@ -26,11 +26,13 @@ class LayerManager:
         offset_x, offset_y = getattr(
             self.viewer, "coordinate_display_offset", (0.0, 0.0)
         )
-        if isinstance(point, tuple):
+        if isinstance(point, (list, tuple)):
             point = QPointF(point[0], point[1])
         return QPointF(point.x() + offset_x, point.y() + offset_y)
 
     def _raw_display_point(self, point):
+        if not isinstance(point, (list, tuple)) or len(point) != 2:
+            return None
         transform = getattr(self.viewer, "raw_to_display_transform", None)
         if not isinstance(transform, dict):
             return self._display_point(point)
@@ -113,80 +115,82 @@ class LayerManager:
         composed.fill(Qt.transparent)
 
         painter = QPainter(composed)
+        try:
+            # Disegna l'immagine di base
+            painter.drawPixmap(0, 0, self.viewer.pixmap)
 
-        # Disegna l'immagine di base
-        painter.drawPixmap(0, 0, self.viewer.pixmap)
+            # Calcola il raggio adattato allo zoom
+            zoom_factor = self.viewer.scaled_pixmap.width() / self.viewer.view_rect.width()
+            radius = int(5 / zoom_factor)
 
-        # Calcola il raggio adattato allo zoom
-        zoom_factor = self.viewer.scaled_pixmap.width() / self.viewer.view_rect.width()
-        radius = int(5 / zoom_factor)
+            # Loop su tutti i layer visibili
+            for name, layer in self.layers.items():
+                if not self.visible.get(name, True):
+                    continue
 
-        # Loop su tutti i layer visibili
-        for name, layer in self.layers.items():
-            if not self.visible.get(name, True):
-                continue
+                if name == "landmarks":
+                    # Draw named landmarks after scaling to keep their size readable.
+                    continue
 
-            if name == "landmarks":
-                # Draw named landmarks after scaling to keep their size readable.
-                continue
+                elif name == "landmarks_raw":
+                    punti = []
+                    for info in (self.viewer.landmarks_raw or {}).values():
+                        coord = info.get("coordinates")
+                        if coord:
+                            point = self._raw_display_point(coord)
+                            if point is not None:
+                                punti.append(point)
 
-            elif name == "landmarks_raw":
-                punti = []
-                for info in (self.viewer.landmarks_raw or {}).values():
-                    coord = info.get("coordinates")
-                    if coord:
-                        point = self._raw_display_point(coord)
-                        if point is not None:
-                            punti.append(point)
-
-                painter.setBrush(QColor(255, 165, 0, 180))
-                painter.setPen(Qt.NoPen)
-                for pt in punti:
-                    painter.drawEllipse(pt, radius, radius)
-
-            elif name == "semilandmarks":
-                punti = []
-                for nome, info in self.viewer.semilandmarks.items():
-                    punti = info.get("coordinates")
-                    painter.setBrush(QColor(0, 255, 0, 180))
+                    painter.setBrush(QColor(255, 165, 0, 180))
                     painter.setPen(Qt.NoPen)
                     for pt in punti:
-                        pt = self._raw_display_point(tuple(pt))
-                        if pt is None:
-                            continue
                         painter.drawEllipse(pt, radius, radius)
 
-            else:
-                # Disegna normalmente il layer (come pixmap)
-                painter.drawPixmap(0, 0, layer)
+                elif name == "semilandmarks":
+                    punti = []
+                    for nome, info in self.viewer.semilandmarks.items():
+                        punti = info.get("coordinates")
+                        painter.setBrush(QColor(0, 255, 0, 180))
+                        painter.setPen(Qt.NoPen)
+                        for pt in punti:
+                            pt = self._raw_display_point(pt)
+                            if pt is None:
+                                continue
+                            painter.drawEllipse(pt, radius, radius)
 
-        painter.end()
+                else:
+                    # Disegna normalmente il layer (come pixmap)
+                    painter.drawPixmap(0, 0, layer)
+        finally:
+            painter.end()
 
         # Ritaglia la porzione visibile e scala
         cropped = composed.copy(self.viewer.view_rect)
         scaled = cropped.scaled(self.viewer.scroll_area.viewport().size(), Qt.KeepAspectRatio, Qt.SmoothTransformation)
         if "landmarks" in self.layers and self.visible.get("landmarks", True):
             painter = QPainter(scaled)
-            painter.setRenderHint(QPainter.Antialiasing)
-            scale_x = scaled.width() / self.viewer.view_rect.width()
-            scale_y = scaled.height() / self.viewer.view_rect.height()
-            selected_name = self.viewer.landmark_combo.currentData()
-            for name, info in self.viewer.landmarks.items():
-                coordinates = info.get("coordinates")
-                if not coordinates:
-                    continue
-                point = self._display_point(tuple(coordinates))
-                point = QPointF(
-                    (point.x() - self.viewer.view_rect.x()) * scale_x,
-                    (point.y() - self.viewer.view_rect.y()) * scale_y,
-                )
-                color = QColor("#42d66b" if name == selected_name else "#ff4545")
-                painter.setPen(QPen(Qt.black, 1))
-                painter.setBrush(color)
-                painter.drawEllipse(point, 6, 6)
-                painter.setPen(QPen(Qt.white, 1))
-                painter.drawText(point + QPointF(8, -8), name)
-            painter.end()
+            try:
+                painter.setRenderHint(QPainter.Antialiasing)
+                scale_x = scaled.width() / self.viewer.view_rect.width()
+                scale_y = scaled.height() / self.viewer.view_rect.height()
+                selected_name = self.viewer.landmark_combo.currentData()
+                for name, info in self.viewer.landmarks.items():
+                    coordinates = info.get("coordinates")
+                    if not coordinates:
+                        continue
+                    point = self._display_point(coordinates)
+                    point = QPointF(
+                        (point.x() - self.viewer.view_rect.x()) * scale_x,
+                        (point.y() - self.viewer.view_rect.y()) * scale_y,
+                    )
+                    color = QColor("#42d66b" if name == selected_name else "#ff4545")
+                    painter.setPen(QPen(Qt.black, 1))
+                    painter.setBrush(color)
+                    painter.drawEllipse(point, 6, 6)
+                    painter.setPen(QPen(Qt.white, 1))
+                    painter.drawText(point + QPointF(8, -8), name)
+            finally:
+                painter.end()
         self.viewer.scaled_pixmap = scaled
         self.viewer.image.setPixmap(scaled)
 

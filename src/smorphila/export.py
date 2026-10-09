@@ -276,12 +276,18 @@ def get_scale(individual_data):
 
 
 def scale_coordinates(coordinates, scale):
-    """Convert pixel coordinates to real-length coordinates."""
+    """Convert coordinates to real units, or retain pixels without a scale."""
 
     if scale is None:
-        return math.nan, math.nan
+        return coordinates[0], coordinates[1]
 
     return coordinates[0] * scale, coordinates[1] * scale
+
+
+def coordinate_unit(scale, unit):
+    """Return the exported coordinate unit for calibrated and raw data."""
+
+    return unit if scale is not None else "px"
 
 
 def get_distance_landmarks(project, distance_name):
@@ -700,6 +706,7 @@ def export_txt(
             )
 
             scale, unit = get_scale(individual_data)
+            unit = coordinate_unit(scale, unit)
 
 
             for point_name, x, y in points:
@@ -1283,8 +1290,8 @@ class ExportDialog(QDialog):
                 self,
                 "Missing scale information",
                 "Scale information is missing or invalid for the following "
-                "individuals. Their exported coordinates and distances will "
-                "be written as nan:\n\n"
+                "individuals. Their coordinates will be exported in pixels "
+                "(px); real-unit distances will be written as nan:\n\n"
                 + "\n".join(missing_scale),
             )
 

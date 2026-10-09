@@ -2,7 +2,7 @@
 Save data
 """
 
-from PySide6.QtWidgets import QInputDialog, QMessageBox
+from PySide6.QtWidgets import QMessageBox
 from pathlib import Path
 import json
 import os
@@ -10,8 +10,30 @@ import os
 from .project_store import definition_signature, load_project, save_project
 
 
+def _record_codes_for_image(project, project_path, image_path, code):
+    """Return records that have the code or refer to the opened image."""
+
+    matches = {code} if code in project["individuals"] else set()
+    try:
+        resolved_image = image_path.resolve()
+    except OSError:
+        return matches
+    for existing_code, individual in project["individuals"].items():
+        if not isinstance(individual, dict):
+            continue
+        stored_path = individual.get("image_path")
+        if not isinstance(stored_path, str):
+            continue
+        try:
+            if (project_path.parent / stored_path).resolve() == resolved_image:
+                matches.add(existing_code)
+        except OSError:
+            continue
+    return matches
+
+
 def _save_to_unified_project(viewer, data, code):
-    """Store one individual in the unified project and rename its image."""
+    """Store one individual in the unified project under the image filename."""
 
     project_path = viewer.project_path
     original_path = viewer.file_path
@@ -27,6 +49,11 @@ def _save_to_unified_project(viewer, data, code):
             image_path, start=project_path.parent
         ).replace("\\", "/")
         data["definition_signature"] = definition_signature(project["definitions"])
+        for existing_code in _record_codes_for_image(
+            project, project_path, image_path, code
+        ):
+            if existing_code != code:
+                del project["individuals"][existing_code]
         project["individuals"][code] = data
         save_project(project_path, project)
     except Exception:
@@ -35,6 +62,7 @@ def _save_to_unified_project(viewer, data, code):
         raise
 
     viewer.file_path = image_path
+    viewer.code = code
     viewer.setWindowTitle(
         f"{image_path.name} - Morphometric analysis - v. {viewer.__version__}"
     )
@@ -45,40 +73,10 @@ def save_data_json(viewer):
         QMessageBox.critical(None, "Warning", "No image loaded")
         return
 
-    code = viewer.code
-
-    while True:
-        # Ask for a filename-safe identifier.
-        code, ok = QInputDialog.getText(
-            None,
-            "Save data",
-            "File name:",
-            text=code,
-        )
-        if not ok:
-            QMessageBox.information(
-                None,
-                "Warning",
-                "Data not saved",
-            )
-            return
-
-        code = code.strip()
-        if not code or code in {".", ".."}:
-            QMessageBox.critical(None, "Warning", "The file name is mandatory")
-            continue
-
-        if Path(code).name != code or any(
-            character in code for character in '<>:"/\\|?*'
-        ):
-            QMessageBox.critical(
-                None,
-                "Warning",
-                "The file name contains invalid characters.",
-            )
-            continue
-
-        break
+    code = viewer.file_path.stem.strip()
+    if not code or code in {".", ".."}:
+        QMessageBox.critical(None, "Warning", "The image filename is invalid.")
+        return
 
     data = {
         "code": code,
@@ -94,6 +92,20 @@ def save_data_json(viewer):
 
     if getattr(viewer, "project_path", None) is not None:
         try:
+            project = load_project(viewer.project_path)
+            existing_codes = _record_codes_for_image(
+                project, viewer.project_path, viewer.file_path, code
+            )
+            if existing_codes:
+                answer = QMessageBox.question(
+                    None,
+                    "Overwrite data",
+                    "This image has already been processed. Overwrite its saved data?",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                    QMessageBox.StandardButton.No,
+                )
+                if answer != QMessageBox.StandardButton.Yes:
+                    return
             _save_to_unified_project(viewer, data, code)
             QMessageBox.information(
                 None,
@@ -105,6 +117,17 @@ def save_data_json(viewer):
         return
 
     json_file_path = viewer.file_path.parent / Path(code).with_suffix(".json")
+
+    if json_file_path.exists():
+        answer = QMessageBox.question(
+            None,
+            "Overwrite data",
+            "This image has already been processed. Overwrite its saved data?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
 
     try:
         with open(json_file_path, "w") as f_in:
@@ -123,6 +146,7 @@ def save_data_json(viewer):
         viewer.file_path = Path(
             viewer.file_path.parent / Path(code).with_suffix(".jpg")
         )
+        viewer.code = code
         viewer.setWindowTitle(
             f"{viewer.file_path.name} - Morphometric analysis - v. {viewer.__version__}"
         )

@@ -1,5 +1,6 @@
 from PySide6.QtGui import QColor
 from PySide6.QtCore import QPointF, Qt
+from PySide6.QtWidgets import QMessageBox
 import copy
 import math
 
@@ -10,15 +11,17 @@ class ArtiPlugin:
         self.active = False
 
     def activate(self):
-        raw_landmarks = (
-            copy.deepcopy(self.viewer.landmarks)
-            if self.viewer.landmarks_raw is None
-            else None
-        )
         if not self.viewer.apply_reference_axis_alignment():
             return
-        if raw_landmarks is not None:
-            self.viewer.landmarks_raw = raw_landmarks
+        source_landmarks = self.viewer.idealized_source_from_raw()
+        self.viewer.idealized_source_landmarks = copy.deepcopy(source_landmarks)
+        self.viewer.landmarks = copy.deepcopy(source_landmarks)
+        compatibility_error = self._shared_segment_compatibility_error()
+        if compatibility_error:
+            self.viewer.landmarks = copy.deepcopy(source_landmarks)
+            self.active = False
+            QMessageBox.warning(self.viewer, "Idealized polyline", compatibility_error)
+            return
         self.active = True
         self.viewer.disattiva_zoom()
         self.viewer.image.setCursor(Qt.CrossCursor)
@@ -43,7 +46,7 @@ class ArtiPlugin:
             group_data = self.viewer.landmarks_groups[gruppo]
             segments = group_data.get("segments")
             if segments is not None:
-                self._draw_segment_group(group_data)
+                self._draw_segment_group(group_data, source_landmarks)
                 continue
             landmark_names = group_data["landmarks"]
             angoli = group_data["angles"]
@@ -52,8 +55,13 @@ class ArtiPlugin:
                 print(landmark_names, angoli)
                 try:
                     punti = self.get_landmark_points_by_names(self.viewer.landmarks, landmark_names)
+                    source_points = self.get_landmark_points_by_names(
+                        source_landmarks, landmark_names
+                    )
                     print("points", punti)
-                    nuova_spezzata = self.ricalcola_spezzata_orientata(landmark_names, punti, angoli)
+                    nuova_spezzata = self.ricalcola_spezzata_orientata(
+                        landmark_names, punti, angoli, source_points
+                    )
                 except ValueError as e:
                     print("Error:", e)
             else:
@@ -74,14 +82,23 @@ class ArtiPlugin:
             else:
                 self.viewer.layer_manager.draw_lines("spezzata_idealizzata", punti, color=QColor(0, 255, 0, 180))
 
-    def _draw_segment_group(self, group_data):
+        length_errors = self.segment_length_errors(source_landmarks)
+        if length_errors:
+            QMessageBox.warning(
+                self.viewer,
+                "Idealized polyline",
+                "The idealized polyline did not preserve all source segment lengths:\n"
+                + "\n".join(length_errors),
+            )
+
+    def _draw_segment_group(self, group_data, source_landmarks):
         """Apply the group's imposed angles while preserving segment lengths."""
 
         segments = group_data.get("segments", [])
         angles = group_data.get("angles", [])
         original_points = {
             name: tuple(data["coordinates"])
-            for name, data in self.viewer.landmarks.items()
+            for name, data in source_landmarks.items()
             if data.get("coordinates")
         }
         headings = {}
@@ -138,6 +155,60 @@ class ArtiPlugin:
                 color=QColor(0, 255, 0, 180),
             )
 
+    def _shared_segment_compatibility_error(self) -> str | None:
+        """Report duplicate directed segments with conflicting angle constraints."""
+
+        constraints = {}
+        for group_name, group_data in self.viewer.landmarks_groups.items():
+            segments = group_data.get("segments")
+            if not isinstance(segments, list):
+                continue
+            angles = group_data.get("angles", [])
+            for index, segment in enumerate(segments):
+                if not isinstance(segment, (list, tuple)) or len(segment) != 2:
+                    continue
+                angle = angles[index] if index < len(angles) else None
+                key = tuple(segment)
+                if key not in constraints:
+                    constraints[key] = (angle, group_name)
+                    continue
+                previous_angle, previous_group = constraints[key]
+                if previous_angle != angle:
+                    start, end = key
+                    return (
+                        f"Shared segment '{start} -> {end}' has incompatible angle "
+                        f"constraints in groups '{previous_group}' and '{group_name}'."
+                    )
+        return ""
+
+    def segment_length_errors(self, source_landmarks) -> list[str]:
+        """Return source-length discrepancies for every idealized segment."""
+
+        errors = []
+        checked_segments = set()
+        for group_data in self.viewer.landmarks_groups.values():
+            for segment in group_data.get("segments", []):
+                if not isinstance(segment, (list, tuple)) or len(segment) != 2:
+                    continue
+                start, end = segment
+                if (start, end) in checked_segments:
+                    continue
+                checked_segments.add((start, end))
+                source_start = source_landmarks.get(start, {}).get("coordinates")
+                source_end = source_landmarks.get(end, {}).get("coordinates")
+                ideal_start = self.viewer.landmarks.get(start, {}).get("coordinates")
+                ideal_end = self.viewer.landmarks.get(end, {}).get("coordinates")
+                if not all((source_start, source_end, ideal_start, ideal_end)):
+                    continue
+                source_length = math.dist(source_start, source_end)
+                ideal_length = math.dist(ideal_start, ideal_end)
+                tolerance = max(1e-6, source_length * 1e-9)
+                if abs(source_length - ideal_length) > tolerance:
+                    errors.append(
+                        f"{start} -> {end}: {ideal_length:.6f} instead of {source_length:.6f}"
+                    )
+        return errors
+
     def get_landmark_points_by_names(self, landmark_dict: dict, names: list[str]) -> list[tuple]:
         missing = [name for name in names if name not in landmark_dict]
         if missing:
@@ -156,21 +227,26 @@ class ArtiPlugin:
         landmark_names: list[str],
         punti: list[tuple],
         angoli: list[float | str],
+        source_points: list[tuple] | None = None,
     ) -> list[tuple]:
         if len(punti) < 2 or len(punti) != len(angoli):
             raise ValueError("You need n points and n angle entries")
+        if source_points is None:
+            source_points = punti
+        if len(source_points) != len(punti):
+            raise ValueError("Source points must match the reconstructed polyline")
         distanze = [
             math.hypot(
-                punti[i + 1][0] - punti[i][0],
-                punti[i + 1][1] - punti[i][1],
+                source_points[i + 1][0] - source_points[i][0],
+                source_points[i + 1][1] - source_points[i][1],
             )
             for i in range(len(punti) - 1)
         ]
         original_orientations = [
             math.degrees(
                 math.atan2(
-                    punti[i + 1][1] - punti[i][1],
-                    punti[i + 1][0] - punti[i][0],
+                    source_points[i + 1][1] - source_points[i][1],
+                    source_points[i + 1][0] - source_points[i][0],
                 )
             )
             for i in range(len(punti) - 1)
