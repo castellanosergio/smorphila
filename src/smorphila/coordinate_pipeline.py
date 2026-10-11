@@ -23,51 +23,6 @@ def _align_point(point, origin, angle):
     return cosine * x - sine * y, sine * x + cosine * y
 
 
-def _apply_segment_constraints(landmarks, source_landmarks, group):
-    segments = group.get("segments", [])
-    angles = group.get("angles", [])
-    headings = {}
-    for index, segment in enumerate(segments):
-        if not isinstance(segment, list) or len(segment) != 2:
-            continue
-        start, end = segment
-        start_point = _coordinates(landmarks.get(start))
-        source_start = _coordinates(source_landmarks.get(start))
-        source_end = _coordinates(source_landmarks.get(end))
-        if start_point is None or source_start is None or source_end is None:
-            continue
-        length = math.dist(source_start, source_end)
-        original_heading = math.degrees(
-            math.atan2(
-                -(source_end[1] - source_start[1]),
-                source_end[0] - source_start[0],
-            )
-        )
-        angle = angles[index] if index < len(angles) else None
-        previous = next(
-            (
-                previous_index
-                for previous_index, previous_segment in reversed(
-                    list(enumerate(segments[:index]))
-                )
-                if previous_segment[1] == start
-            ),
-            None,
-        )
-        if angle is None or (isinstance(angle, str) and angle.lower() == "free"):
-            heading = original_heading
-        elif previous is None or previous not in headings:
-            heading = 90 + float(angle)
-        else:
-            heading = headings[previous] + float(angle)
-        radians = math.radians(heading)
-        landmarks[end]["coordinates"] = (
-            start_point[0] + length * math.cos(radians),
-            start_point[1] - length * math.sin(radians),
-        )
-        headings[index] = heading
-
-
 def _apply_polyline_constraints(landmarks, source_landmarks, group):
     names = group.get("landmarks", [])
     angles = group.get("angles", [])
@@ -118,6 +73,109 @@ def _apply_polyline_constraints(landmarks, source_landmarks, group):
         heading += delta
 
 
+def _heading(first, second):
+    """Return a screen-coordinate heading in degrees."""
+
+    return math.degrees(
+        math.atan2(-(second[1] - first[1]), second[0] - first[0])
+    )
+
+
+def _normalize_rotation(angle):
+    """Normalize an angle to the interval [-180, 180)."""
+
+    return (angle + 180) % 360 - 180
+
+
+def _is_free_angle(angle):
+    return angle is None or (isinstance(angle, str) and angle.lower() == "free")
+
+
+def _rotate_segment_branch(landmarks, groups, start, end, angle):
+    """Rotate the segment branch beyond ``end`` without moving ``start``."""
+
+    connected = {end}
+    changed = True
+    while changed:
+        changed = False
+        for group in groups.values():
+            if not isinstance(group, dict):
+                continue
+            for segment in group.get("segments", []):
+                if not isinstance(segment, list) or len(segment) != 2:
+                    continue
+                first, second = segment
+                if start in (first, second):
+                    continue
+                if first in connected or second in connected:
+                    before = len(connected)
+                    connected.update((first, second))
+                    changed = changed or len(connected) != before
+
+    pivot = _coordinates(landmarks.get(start))
+    if pivot is None:
+        return
+    radians = math.radians(angle)
+    cosine = math.cos(radians)
+    sine = math.sin(radians)
+    for name in connected:
+        point = _coordinates(landmarks.get(name))
+        if point is None:
+            continue
+        delta_x = point[0] - pivot[0]
+        delta_y = point[1] - pivot[1]
+        landmarks[name]["coordinates"] = (
+            pivot[0] + delta_x * cosine + delta_y * sine,
+            pivot[1] - delta_x * sine + delta_y * cosine,
+        )
+
+
+def _apply_connected_segment_constraints(landmarks, groups):
+    """Apply segment angles while preserving connected segment lengths."""
+
+    for group in groups.values():
+        if not isinstance(group, dict):
+            continue
+        segments = group.get("segments")
+        if not isinstance(segments, list):
+            continue
+        angles = group.get("angles", [])
+        for index, segment in enumerate(segments):
+            if not isinstance(segment, list) or len(segment) != 2:
+                continue
+            start, end = segment
+            start_point = _coordinates(landmarks.get(start))
+            end_point = _coordinates(landmarks.get(end))
+            angle = angles[index] if index < len(angles) else None
+            if start_point is None or end_point is None or _is_free_angle(angle):
+                continue
+            incoming_index = next(
+                (
+                    previous_index
+                    for previous_index, previous_segment in reversed(
+                        list(enumerate(segments[:index]))
+                    )
+                    if isinstance(previous_segment, list)
+                    and len(previous_segment) == 2
+                    and previous_segment[1] == start
+                ),
+                None,
+            )
+            if incoming_index is None:
+                heading = 90 + float(angle)
+            else:
+                incoming_start, incoming_end = segments[incoming_index]
+                incoming_first = _coordinates(landmarks.get(incoming_start))
+                incoming_second = _coordinates(landmarks.get(incoming_end))
+                if incoming_first is None or incoming_second is None:
+                    continue
+                heading = _heading(incoming_first, incoming_second) + float(angle)
+            rotation = _normalize_rotation(heading - _heading(start_point, end_point))
+            if math.isclose(rotation, 0, abs_tol=1e-9):
+                continue
+            _rotate_segment_branch(landmarks, groups, start, end, rotation)
+
+
 def idealize_landmarks(raw_landmarks, definitions):
     """Return a constrained landmark geometry derived from immutable raw points."""
 
@@ -132,13 +190,27 @@ def idealize_landmarks(raw_landmarks, definitions):
     )
     if not isinstance(groups, dict):
         return landmarks
+    _apply_connected_segment_constraints(landmarks, groups)
     for group in groups.values():
         if not isinstance(group, dict):
             continue
-        if "segments" in group:
-            _apply_segment_constraints(landmarks, source_landmarks, group)
-        else:
+        if "segments" not in group:
             _apply_polyline_constraints(landmarks, source_landmarks, group)
+    frame = _reference_frame(definitions)
+    if frame is not None:
+        origin_name = frame[0]
+        source_origin = _coordinates(source_landmarks.get(origin_name))
+        idealized_origin = _coordinates(landmarks.get(origin_name))
+        if source_origin is not None and idealized_origin is not None:
+            offset_x = source_origin[0] - idealized_origin[0]
+            offset_y = source_origin[1] - idealized_origin[1]
+            for landmark in landmarks.values():
+                point = _coordinates(landmark)
+                if point is not None:
+                    landmark["coordinates"] = (
+                        point[0] + offset_x,
+                        point[1] + offset_y,
+                    )
     return landmarks
 
 
@@ -287,16 +359,7 @@ def derive_coordinates(raw_landmarks, raw_semilandmarks, definitions):
             else point
             for point in curve["coordinates"]
         ]
-    groups = definitions.get("landmarks_groups", {})
-    if isinstance(groups, dict):
-        source_landmarks = copy.deepcopy(landmarks)
-        for group in groups.values():
-            if not isinstance(group, dict):
-                continue
-            if "segments" in group:
-                _apply_segment_constraints(landmarks, source_landmarks, group)
-            else:
-                _apply_polyline_constraints(landmarks, source_landmarks, group)
+    landmarks = idealize_landmarks(landmarks, definitions)
     for landmark in landmarks.values():
         point = _coordinates(landmark)
         if point is not None:

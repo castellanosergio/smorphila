@@ -4,6 +4,11 @@ from PySide6.QtWidgets import QMessageBox
 import copy
 import math
 
+try:
+    from .coordinate_pipeline import idealize_landmarks
+except ImportError:
+    from coordinate_pipeline import idealize_landmarks
+
 
 class ArtiPlugin:
     def __init__(self, viewer):
@@ -22,6 +27,11 @@ class ArtiPlugin:
             self.active = False
             QMessageBox.warning(self.viewer, "Idealized polyline", compatibility_error)
             return
+        definitions = {"landmarks_groups": self.viewer.landmarks_groups}
+        reference_frame = getattr(self.viewer, "reference_frame", None)
+        if isinstance(reference_frame, dict):
+            definitions["reference_frame"] = reference_frame
+        self.viewer.landmarks = idealize_landmarks(source_landmarks, definitions)
         self.active = True
         self.viewer.disattiva_zoom()
         self.viewer.image.setCursor(Qt.CrossCursor)
@@ -92,58 +102,19 @@ class ArtiPlugin:
             )
 
     def _draw_segment_group(self, group_data, source_landmarks):
-        """Apply the group's imposed angles while preserving segment lengths."""
+        """Draw an already idealized segment group."""
 
         segments = group_data.get("segments", [])
-        angles = group_data.get("angles", [])
-        original_points = {
-            name: tuple(data["coordinates"])
-            for name, data in source_landmarks.items()
-            if data.get("coordinates")
-        }
-        headings = {}
-        for index, segment in enumerate(segments):
+        for segment in segments:
             if not isinstance(segment, (list, tuple)) or len(segment) != 2:
                 continue
             start, end = segment
-            if start not in original_points or end not in original_points:
+            start_data = self.viewer.landmarks.get(start, {})
+            end_data = self.viewer.landmarks.get(end, {})
+            start_point = start_data.get("coordinates")
+            end_point = end_data.get("coordinates")
+            if start_point is None or end_point is None:
                 continue
-            start_point = self.viewer.landmarks[start]["coordinates"]
-            source_start = original_points[start]
-            source_end = original_points[end]
-            length = math.hypot(
-                source_end[0] - source_start[0], source_end[1] - source_start[1]
-            )
-            original_heading = math.degrees(
-                math.atan2(
-                    -(source_end[1] - source_start[1]),
-                    source_end[0] - source_start[0],
-                )
-            )
-            angle = angles[index] if index < len(angles) else None
-            incoming_index = next(
-                (
-                    previous_index
-                    for previous_index, previous_segment in reversed(
-                        list(enumerate(segments[:index]))
-                    )
-                    if previous_segment[1] == start
-                ),
-                None,
-            )
-            if angle is None or (isinstance(angle, str) and angle.lower() == "free"):
-                heading = original_heading
-            elif incoming_index is None or incoming_index not in headings:
-                heading = 90 + float(angle)
-            else:
-                heading = headings[incoming_index] + float(angle)
-            radians = math.radians(heading)
-            end_point = (
-                start_point[0] + length * math.cos(radians),
-                start_point[1] - length * math.sin(radians),
-            )
-            self.viewer.landmarks[end]["coordinates"] = end_point
-            headings[index] = heading
             self.viewer.layer_manager.draw_points(
                 "spezzata_idealizzata",
                 [QPointF(*start_point), QPointF(*end_point)],
