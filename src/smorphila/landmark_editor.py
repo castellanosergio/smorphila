@@ -101,6 +101,17 @@ class MainAxisDefinition:
     angle_from_vertical: float = 0
 
 
+@dataclass
+class ReferenceFrameDefinition:
+    """An analytical frame derived from the idealized landmark geometry."""
+
+    origin_landmark: str
+    axis_start_landmark: str
+    axis_end_landmark: str
+    target_angle_from_vertical: float = 0
+    axis_source: str = "idealized"
+
+
 def axis_landmark_points(
     axis: MainAxisDefinition, landmarks: dict[str, Landmark]
 ) -> tuple[QPointF, QPointF] | None:
@@ -171,6 +182,7 @@ def validate_definitions(
     curves: dict[str, CurveDefinition] | None = None,
     main_axis: MainAxisDefinition | None = None,
     distances: dict[str, tuple[str, str]] | None = None,
+    reference_frame: ReferenceFrameDefinition | None = None,
 ) -> list[str]:
     """Return all errors that would make the configuration invalid."""
 
@@ -242,6 +254,32 @@ def validate_definitions(
         if main_axis.angle_from_vertical < -180 or main_axis.angle_from_vertical > 180:
             errors.append("The reference axis angle must be within -180..180.")
 
+    if reference_frame is not None:
+        if reference_frame.axis_source != "idealized":
+            errors.append("The analytical frame axis source must be 'idealized'.")
+        if (
+            reference_frame.axis_start_landmark
+            == reference_frame.axis_end_landmark
+        ):
+            errors.append("The analytical frame axis must use two different landmarks.")
+        for landmark_name in (
+            reference_frame.origin_landmark,
+            reference_frame.axis_start_landmark,
+            reference_frame.axis_end_landmark,
+        ):
+            if landmark_name not in landmarks:
+                errors.append(
+                    f"The analytical frame references unknown landmark "
+                    f"'{landmark_name}'."
+                )
+        if (
+            reference_frame.target_angle_from_vertical < -180
+            or reference_frame.target_angle_from_vertical > 180
+        ):
+            errors.append(
+                "The analytical frame angle must be within -180..180."
+            )
+
     return errors
 
 
@@ -254,6 +292,7 @@ def serialize_json(
     image_rotation: float = 0,
     json_path: pl.Path | None = None,
     distances: dict[str, tuple[str, str]] | None = None,
+    reference_frame: ReferenceFrameDefinition | None = None,
 ) -> str:
     """Serialize the complete project definition as JSON."""
 
@@ -298,6 +337,16 @@ def serialize_json(
         project_definition["reference_axis"] = {
             "landmarks": [main_axis.start_landmark, main_axis.end_landmark],
             "angle_from_vertical": main_axis.angle_from_vertical,
+        }
+    if reference_frame is not None:
+        project_definition["reference_frame"] = {
+            "origin_landmark": reference_frame.origin_landmark,
+            "axis_landmarks": [
+                reference_frame.axis_start_landmark,
+                reference_frame.axis_end_landmark,
+            ],
+            "axis_source": reference_frame.axis_source,
+            "target_angle_from_vertical": reference_frame.target_angle_from_vertical,
         }
 
     return (
@@ -370,6 +419,7 @@ def deserialize_json(
     dict[str, CurveDefinition],
     dict[str, tuple[str, str]],
     MainAxisDefinition | None,
+    ReferenceFrameDefinition | None,
     float,
     list[str],
 ]:
@@ -505,6 +555,7 @@ def deserialize_json(
     )
     axis_data = project_definition.get("reference_axis")
     main_axis = None
+    reference_frame = None
     warnings = []
     if "reference_axis" not in project_definition and "main_axis" in project_definition:
         axis_data = project_definition["main_axis"]
@@ -538,7 +589,59 @@ def deserialize_json(
         else:
             raise ValueError("reference_axis must define two landmark names")
 
-    return landmarks, groups, curves, distances, main_axis, image_rotation, warnings
+    frame_data = project_definition.get("reference_frame")
+    if frame_data is not None:
+        if not isinstance(frame_data, dict):
+            raise ValueError("reference_frame must be an object")
+        origin_landmark = frame_data.get("origin_landmark")
+        axis_landmarks = frame_data.get("axis_landmarks")
+        axis_source = frame_data.get("axis_source", "idealized")
+        if not isinstance(origin_landmark, str):
+            raise ValueError("reference_frame must define an origin landmark")
+        if (
+            not isinstance(axis_landmarks, list)
+            or len(axis_landmarks) != 2
+            or not all(isinstance(name, str) for name in axis_landmarks)
+        ):
+            raise ValueError("reference_frame must define two axis landmarks")
+        if axis_source != "idealized":
+            raise ValueError("reference_frame axis_source must be 'idealized'")
+        axis_start_landmark, axis_end_landmark = axis_landmarks
+        if axis_start_landmark == axis_end_landmark:
+            raise ValueError("The analytical frame axis landmarks must be distinct")
+        frame_landmarks = [
+            origin_landmark,
+            axis_start_landmark,
+            axis_end_landmark,
+        ]
+        unknown = [name for name in frame_landmarks if name not in landmarks]
+        if unknown:
+            raise ValueError(
+                "Analytical frame references unknown landmarks: "
+                + ", ".join(unknown)
+            )
+        target_angle = _number(
+            frame_data.get("target_angle_from_vertical", 0),
+            "Analytical frame target angle from vertical",
+        )
+        reference_frame = ReferenceFrameDefinition(
+            origin_landmark,
+            axis_start_landmark,
+            axis_end_landmark,
+            normalize_rotation(target_angle),
+            axis_source,
+        )
+
+    return (
+        landmarks,
+        groups,
+        curves,
+        distances,
+        main_axis,
+        reference_frame,
+        image_rotation,
+        warnings,
+    )
 
 
 class AngleWheel(QWidget):
@@ -758,7 +861,7 @@ class RelativeAngleDiagram(AngleWheel):
 
 
 class AngleSelectionDialog(QDialog):
-    """Dialog for imposing or clearing one segment angle."""
+    """Dialog for imposing or retaining one segment angle."""
 
     def __init__(
         self,
@@ -772,6 +875,7 @@ class AngleSelectionDialog(QDialog):
     ):
         super().__init__(parent)
         self.selected_angle = selected_angle
+        self.keep_current_angle = False
         self.relative = relative
         angle_kind = "relative turn" if relative else "absolute angle"
         self.setWindowTitle(f"Set {angle_kind}: {segment_name}")
@@ -797,9 +901,9 @@ class AngleSelectionDialog(QDialog):
 
         self.selection_label = QLabel()
         layout.addWidget(self.selection_label)
-        clear_button = QPushButton("No constraint")
-        clear_button.clicked.connect(self._clear_angle)
-        layout.addWidget(clear_button)
+        keep_current_button = QPushButton("Keep current angle")
+        keep_current_button.clicked.connect(self._keep_current_angle)
+        layout.addWidget(keep_current_button)
 
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         buttons.accepted.connect(self.accept)
@@ -809,17 +913,19 @@ class AngleSelectionDialog(QDialog):
 
     def _select_angle(self, angle: int):
         self.selected_angle = float(angle)
+        self.keep_current_angle = False
         self._update_selection_label()
 
-    def _clear_angle(self):
+    def _keep_current_angle(self):
         self.selected_angle = None
+        self.keep_current_angle = True
         self.selector.selected_angle = None
         self.selector.update()
         self._update_selection_label()
 
     def _update_selection_label(self):
         text = (
-            "No constraint"
+            "Keep current angle"
             if self.selected_angle is None
             else (
                 f"Selected relative turn: {self.selected_angle:g}°"
@@ -879,6 +985,7 @@ class ImageCanvas(QWidget):
         self.groups: dict[str, GroupDefinition] = {}
         self.distances: dict[str, tuple[str, str]] = {}
         self.main_axis: MainAxisDefinition | None = None
+        self.reference_frame: ReferenceFrameDefinition | None = None
         self.pending_axis_points: list[QPointF] = []
         self.selected_landmark = ""
         self._pan_start_position: QPointF | None = None
@@ -1099,6 +1206,7 @@ class ImageCanvas(QWidget):
         elif self.view_mode == "idealized":
             landmark_points, group_segments = self._idealized_group_geometry()
             self._draw_idealized_groups(painter, group_segments)
+            self._draw_reference_frame(painter, landmark_points)
             self._draw_landmarks(painter, landmark_points)
             return
         else:
@@ -1112,28 +1220,22 @@ class ImageCanvas(QWidget):
         return self.image_to_widget(QPointF(landmark.x, landmark.y))
 
     def _idealized_group_geometry(self):
-        """Return group geometry reconstructed from the imposed segment angles."""
+        """Return geometry reconstructed from constraints across all groups."""
 
         landmark_points = {
             landmark.name: self.image_to_widget(QPointF(landmark.x, landmark.y))
             for landmark in self.landmarks.values()
             if landmark.is_placed
         }
-        group_segments = []
         for group in self.groups.values():
-            headings = {}
             for index, (start, end) in enumerate(group.segments):
-                source_start = self._landmark_point(start)
-                source_end = self._landmark_point(end)
                 start_point = landmark_points.get(start)
-                if source_start is None or source_end is None or start_point is None:
+                end_point = landmark_points.get(end)
+                if start_point is None or end_point is None:
                     continue
-                length = math.hypot(
-                    source_end.x() - source_start.x(),
-                    source_end.y() - source_start.y(),
-                )
-                original_heading = trigonometric_heading(source_start, source_end)
                 angle = group.angles[index] if index < len(group.angles) else None
+                if angle is None:
+                    continue
                 incoming_index = next(
                     (
                         previous_index
@@ -1144,21 +1246,116 @@ class ImageCanvas(QWidget):
                     ),
                     None,
                 )
-                if angle is None:
-                    heading = original_heading
-                elif incoming_index is None or incoming_index not in headings:
+                if incoming_index is None:
                     heading = normalize_rotation(90 + angle)
                 else:
-                    heading = normalize_rotation(headings[incoming_index] + angle)
-                radians = math.radians(heading)
-                end_point = QPointF(
-                    start_point.x() + length * math.cos(radians),
-                    start_point.y() - length * math.sin(radians),
+                    incoming_start, incoming_end = group.segments[incoming_index]
+                    incoming_first = landmark_points.get(incoming_start)
+                    incoming_second = landmark_points.get(incoming_end)
+                    if incoming_first is None or incoming_second is None:
+                        continue
+                    heading = normalize_rotation(
+                        trigonometric_heading(incoming_first, incoming_second) + angle
+                    )
+                current_heading = trigonometric_heading(start_point, end_point)
+                rotation = normalize_rotation(heading - current_heading)
+                if math.isclose(rotation, 0, abs_tol=1e-9):
+                    continue
+                self._rotate_idealized_branch(
+                    landmark_points, start, end, rotation
                 )
-                landmark_points[end] = end_point
-                headings[index] = heading
-                group_segments.append((start_point, end_point, angle, index))
+        self._anchor_idealized_origin(landmark_points)
+        self._align_idealized_reference_frame(landmark_points)
+        group_segments = []
+        for group in self.groups.values():
+            for index, (start, end) in enumerate(group.segments):
+                if start not in landmark_points or end not in landmark_points:
+                    continue
+                angle = group.angles[index] if index < len(group.angles) else None
+                group_segments.append(
+                    (landmark_points[start], landmark_points[end], angle, index)
+                )
         return landmark_points, group_segments
+
+    def _anchor_idealized_origin(self, landmark_points: dict[str, QPointF]):
+        """Keep the analytical-frame origin at its original image position."""
+
+        frame = self.reference_frame
+        if frame is None:
+            return
+        idealized_origin = landmark_points.get(frame.origin_landmark)
+        source_origin = self._landmark_point(frame.origin_landmark)
+        if idealized_origin is None or source_origin is None:
+            return
+        offset = source_origin - idealized_origin
+        for name, point in landmark_points.items():
+            landmark_points[name] = point + offset
+
+    def _align_idealized_reference_frame(
+        self, landmark_points: dict[str, QPointF]
+    ):
+        """Rotate the complete idealized geometry into the analytical frame."""
+
+        frame = self.reference_frame
+        if frame is None:
+            return
+        origin = landmark_points.get(frame.origin_landmark)
+        axis_start = landmark_points.get(frame.axis_start_landmark)
+        axis_end = landmark_points.get(frame.axis_end_landmark)
+        if origin is None or axis_start is None or axis_end is None:
+            return
+        current_heading = trigonometric_heading(axis_start, axis_end)
+        target_heading = normalize_rotation(90 + frame.target_angle_from_vertical)
+        rotation = normalize_rotation(target_heading - current_heading)
+        if math.isclose(rotation, 0, abs_tol=1e-9):
+            return
+        radians = math.radians(rotation)
+        cosine = math.cos(radians)
+        sine = math.sin(radians)
+        for name, point in landmark_points.items():
+            delta_x = point.x() - origin.x()
+            delta_y = point.y() - origin.y()
+            landmark_points[name] = QPointF(
+                origin.x() + delta_x * cosine + delta_y * sine,
+                origin.y() - delta_x * sine + delta_y * cosine,
+            )
+
+    def _rotate_idealized_branch(
+        self,
+        landmark_points: dict[str, QPointF],
+        start: str,
+        end: str,
+        angle: float,
+    ):
+        """Rotate the branch reached from a constrained segment endpoint."""
+
+        connected = {end}
+        changed = True
+        while changed:
+            changed = False
+            for group in self.groups.values():
+                for first, second in group.segments:
+                    if start in (first, second):
+                        continue
+                    if first in connected or second in connected:
+                        before = len(connected)
+                        connected.update((first, second))
+                        changed = changed or len(connected) != before
+
+        pivot = landmark_points[start]
+        radians = math.radians(angle)
+        cosine = math.cos(radians)
+        sine = math.sin(radians)
+        for name in connected:
+            point = landmark_points.get(name)
+            if point is None:
+                continue
+            delta_x = point.x() - pivot.x()
+            delta_y = point.y() - pivot.y()
+            landmark_points[name] = QPointF(
+                pivot.x() + delta_x * cosine + delta_y * sine,
+                pivot.y() - delta_x * sine + delta_y * cosine,
+            )
 
     def _draw_idealized_groups(self, painter: QPainter, group_segments):
         painter.setPen(QPen(QColor(60, 180, 255, 200), 3))
@@ -1171,6 +1368,27 @@ class ImageCanvas(QWidget):
                 suffix = "absolute" if index == 0 else "turn"
                 painter.drawText(midpoint + QPointF(6, -6), f"{angle:g}° {suffix}")
                 painter.setPen(QPen(QColor(60, 180, 255, 200), 3))
+
+    def _draw_reference_frame(self, painter: QPainter, landmark_points):
+        """Draw the analytical frame using idealized landmark positions."""
+
+        frame = self.reference_frame
+        if frame is None:
+            return
+        origin = landmark_points.get(frame.origin_landmark)
+        axis_start = landmark_points.get(frame.axis_start_landmark)
+        axis_end = landmark_points.get(frame.axis_end_landmark)
+        if origin is None or axis_start is None or axis_end is None:
+            return
+        painter.setPen(QPen(QColor(255, 215, 0, 220), 3))
+        painter.setBrush(QColor(255, 215, 0, 220))
+        painter.drawEllipse(origin, 7, 7)
+        painter.drawLine(axis_start, axis_end)
+        midpoint = (axis_start + axis_end) / 2
+        painter.drawText(
+            midpoint + QPointF(8, -8),
+            f"Analytical axis ({frame.target_angle_from_vertical:g} degrees)",
+        )
 
     def _draw_groups(self, painter: QPainter):
         painter.setPen(QPen(QColor(60, 180, 255, 200), 3))
@@ -1280,6 +1498,7 @@ class LandmarkEditor(QMainWindow):
         self.curves: dict[str, CurveDefinition] = {}
         self.distances: dict[str, tuple[str, str]] = {}
         self.main_axis: MainAxisDefinition | None = None
+        self.reference_frame: ReferenceFrameDefinition | None = None
         self.image_rotation = 0.0
         self.mode = "idle"
         self.pending_name = ""
@@ -1301,6 +1520,7 @@ class LandmarkEditor(QMainWindow):
         self.canvas.groups = self.groups
         self.canvas.distances = self.distances
         self.canvas.main_axis = self.main_axis
+        self.canvas.reference_frame = self.reference_frame
         self.canvas.pending_axis_points = self.pending_axis_points
         self.canvas.image_clicked.connect(self._handle_canvas_click)
         self.canvas.zoom_in_button.clicked.connect(self._zoom_in)
@@ -1312,7 +1532,7 @@ class LandmarkEditor(QMainWindow):
             "Landmarks", self._build_landmark_group(), 360, 360
         )
         self.reference_axis_panel = self._create_panel(
-            "Reference axis", self._build_reference_axis_section(), 400, 210
+            "Reference settings", self._build_reference_axis_section(), 400, 350
         )
         self.group_panel = self._create_panel(
             "Groups", self._build_group_section(), 500, 330
@@ -1412,10 +1632,11 @@ class LandmarkEditor(QMainWindow):
         return group
 
     def _build_reference_axis_section(self) -> QGroupBox:
-        group = QGroupBox("Reference axis")
+        group = QGroupBox("Reference settings")
         layout = QVBoxLayout(group)
         description = QLabel(
-            "By default, the reference axis is the vertical image axis."
+            "Image alignment is optional. The analytical frame is derived from "
+            "the idealized geometry."
         )
         description.setWordWrap(True)
         layout.addWidget(description)
@@ -1438,6 +1659,27 @@ class LandmarkEditor(QMainWindow):
         self.update_axis_button.clicked.connect(self._update_reference_axis)
         self.define_axis_button.clicked.connect(self._start_axis_definition)
         self.clear_axis_button.clicked.connect(self._clear_axis)
+
+        frame_label = QLabel("Analytical reference frame")
+        layout.addWidget(frame_label)
+        frame_form = QFormLayout()
+        self.frame_origin_combo = QComboBox()
+        self.frame_axis_start_combo = QComboBox()
+        self.frame_axis_end_combo = QComboBox()
+        self.frame_target_combo = QComboBox()
+        self.frame_target_combo.addItem("Vertical", 0)
+        self.frame_target_combo.addItem("Horizontal", -90)
+        frame_form.addRow("Origin landmark:", self.frame_origin_combo)
+        frame_form.addRow("Axis start landmark:", self.frame_axis_start_combo)
+        frame_form.addRow("Axis end landmark:", self.frame_axis_end_combo)
+        frame_form.addRow("Target orientation:", self.frame_target_combo)
+        layout.addLayout(frame_form)
+        self.update_frame_button = QPushButton("Update analytical frame")
+        self.clear_frame_button = QPushButton("Clear analytical frame")
+        layout.addWidget(self.update_frame_button)
+        layout.addWidget(self.clear_frame_button)
+        self.update_frame_button.clicked.connect(self._update_reference_frame)
+        self.clear_frame_button.clicked.connect(self._clear_reference_frame)
         return group
 
     def _build_curve_section(self) -> QGroupBox:
@@ -1639,6 +1881,7 @@ class LandmarkEditor(QMainWindow):
         self.curves = {}
         self.distances = {}
         self.main_axis = None
+        self.reference_frame = None
         self.image_rotation = 0.0
         self.mode = "idle"
         self.pending_segments.clear()
@@ -1659,6 +1902,7 @@ class LandmarkEditor(QMainWindow):
                         self.curves,
                         self.distances,
                         self.main_axis,
+                        self.reference_frame,
                         self.image_rotation,
                         warnings,
                     ) = deserialize_json(content)
@@ -1676,6 +1920,7 @@ class LandmarkEditor(QMainWindow):
                     self.curves,
                     self.distances,
                     self.main_axis,
+                    self.reference_frame,
                     self.image_rotation,
                     warnings,
                 ) = deserialize_json(content)
@@ -1749,6 +1994,44 @@ class LandmarkEditor(QMainWindow):
         self._refresh_groups()
         self.canvas.update()
         self.status_bar.showMessage("Reference axis updated.")
+
+    def _update_reference_frame(self):
+        origin_landmark = self.frame_origin_combo.currentText()
+        axis_start_landmark = self.frame_axis_start_combo.currentText()
+        axis_end_landmark = self.frame_axis_end_combo.currentText()
+        if not all((origin_landmark, axis_start_landmark, axis_end_landmark)):
+            QMessageBox.warning(
+                self,
+                "Analytical reference frame",
+                "Add the origin and both axis landmarks before defining a frame.",
+            )
+            return
+        if axis_start_landmark == axis_end_landmark:
+            QMessageBox.warning(
+                self,
+                "Analytical reference frame",
+                "Select two different axis landmarks.",
+            )
+            return
+        self.reference_frame = ReferenceFrameDefinition(
+            origin_landmark,
+            axis_start_landmark,
+            axis_end_landmark,
+            float(self.frame_target_combo.currentData()),
+        )
+        self._sync_canvas_data()
+        self.dirty = True
+        self._refresh_reference_frame_landmark_choices()
+        self.canvas.update()
+        self.status_bar.showMessage("Analytical reference frame updated.")
+
+    def _clear_reference_frame(self):
+        self.reference_frame = None
+        self._sync_canvas_data()
+        self.dirty = True
+        self._refresh_reference_frame_landmark_choices()
+        self.canvas.update()
+        self.status_bar.showMessage("Analytical reference frame cleared.")
 
     def _clean_name(self, edit: QLineEdit, kind: str, collection: dict) -> str | None:
         name = edit.text().strip()
@@ -1833,6 +2116,13 @@ class LandmarkEditor(QMainWindow):
                 self.main_axis.start_landmark = new_name
             if self.main_axis.end_landmark == old_name:
                 self.main_axis.end_landmark = new_name
+        if self.reference_frame is not None:
+            if self.reference_frame.origin_landmark == old_name:
+                self.reference_frame.origin_landmark = new_name
+            if self.reference_frame.axis_start_landmark == old_name:
+                self.reference_frame.axis_start_landmark = new_name
+            if self.reference_frame.axis_end_landmark == old_name:
+                self.reference_frame.axis_end_landmark = new_name
         self._sync_canvas_data()
         self.landmark_name_edit.clear()
         self._refresh_lists()
@@ -1865,6 +2155,12 @@ class LandmarkEditor(QMainWindow):
             self.main_axis.end_landmark,
         ):
             references.append("the reference axis")
+        if self.reference_frame is not None and name in (
+            self.reference_frame.origin_landmark,
+            self.reference_frame.axis_start_landmark,
+            self.reference_frame.axis_end_landmark,
+        ):
+            references.append("the analytical reference frame")
         if references:
             QMessageBox.warning(
                 self,
@@ -1922,11 +2218,18 @@ class LandmarkEditor(QMainWindow):
         start_point = self.landmarks[start]
         end_point = self.landmarks[end]
         if start_point.is_placed and end_point.is_placed:
-            return trigonometric_heading(
-                self.canvas.image_to_widget(QPointF(start_point.x, start_point.y)),
-                self.canvas.image_to_widget(QPointF(end_point.x, end_point.y)),
-            )
+            return self._segment_heading(start, end)
         return 180.0
+
+    def _segment_heading(self, start: str, end: str) -> float:
+        """Return a segment heading in the current displayed image orientation."""
+
+        start_point = self.landmarks[start]
+        end_point = self.landmarks[end]
+        return trigonometric_heading(
+            self.canvas.image_to_widget(QPointF(start_point.x, start_point.y)),
+            self.canvas.image_to_widget(QPointF(end_point.x, end_point.y)),
+        )
 
     def _main_axis_heading(self) -> float:
         if self.canvas.main_axis is None:
@@ -1962,6 +2265,54 @@ class LandmarkEditor(QMainWindow):
             landmark = self.landmarks[name]
             if landmark.is_placed:
                 group.reference_points.setdefault(name, (landmark.x, landmark.y))
+
+    def _connected_landmark_names(self, landmark_name: str) -> set[str]:
+        """Return landmarks linked to a landmark through group segments."""
+
+        connected = {landmark_name}
+        changed = True
+        while changed:
+            changed = False
+            for group in self.groups.values():
+                for start, end in group.segments:
+                    if start in connected or end in connected:
+                        before = len(connected)
+                        connected.update((start, end))
+                        changed = changed or len(connected) != before
+        return connected
+
+    def _move_connected_landmarks(self, landmark_name: str, destination: QPointF):
+        """Translate all connected landmark groups to a new landmark position."""
+
+        landmark = self.landmarks[landmark_name]
+        if not landmark.is_placed:
+            landmark.x = destination.x()
+            landmark.y = destination.y()
+            return
+        delta_x = destination.x() - landmark.x
+        delta_y = destination.y() - landmark.y
+        for name in self._connected_landmark_names(landmark_name):
+            connected_landmark = self.landmarks[name]
+            if connected_landmark.is_placed:
+                connected_landmark.x += delta_x
+                connected_landmark.y += delta_y
+
+    def _update_absolute_group_angles(self, landmark_names: set[str]):
+        """Update absolute segment angles after rotating connected groups."""
+
+        for group in self.groups.values():
+            for index, (start, end) in enumerate(group.segments):
+                if start not in landmark_names or end not in landmark_names:
+                    continue
+                angle = group.angles[index] if index < len(group.angles) else None
+                has_incoming = any(
+                    previous_end == start
+                    for _, previous_end in group.segments[:index]
+                )
+                if angle is not None and not has_incoming:
+                    group.angles[index] = normalize_rotation(
+                        self._segment_heading(start, end) - 90
+                    )
 
     @staticmethod
     def _dependent_segment_indices(
@@ -2114,11 +2465,19 @@ class LandmarkEditor(QMainWindow):
         )
         if dialog.exec() != QDialog.Accepted:
             return
+        selected_angle = dialog.selected_angle
+        if dialog.keep_current_angle:
+            heading = self._segment_heading(start, end)
+            selected_angle = (
+                normalize_rotation(heading - incoming_angle)
+                if incoming is not None
+                else normalize_rotation(heading - 90)
+            )
         self._capture_reference_points(group, start, end)
         group.segments.append((start, end))
-        if group.angles or dialog.selected_angle is not None:
+        if group.angles or selected_angle is not None:
             self._ensure_segment_angles(group)
-            group.angles[-1] = dialog.selected_angle
+            group.angles[-1] = selected_angle
         self._compact_free_angles(group)
         self._refresh_groups()
         self._select_group_by_name(group.name)
@@ -2171,9 +2530,7 @@ class LandmarkEditor(QMainWindow):
         radians = math.radians(angle)
         cosine = math.cos(radians)
         sine = math.sin(radians)
-        group_landmarks = {
-            landmark_name for segment in group.segments for landmark_name in segment
-        }
+        group_landmarks = self._connected_landmark_names(proximal_name)
         for landmark_name in group_landmarks:
             landmark = self.landmarks[landmark_name]
             if not landmark.is_placed:
@@ -2191,9 +2548,7 @@ class LandmarkEditor(QMainWindow):
             landmark.x = rotated_point.x()
             landmark.y = rotated_point.y()
 
-        self._ensure_segment_angles(group)
-        first_heading = trigonometric_heading(display_pivot, first_end_display)
-        group.angles[0] = normalize_rotation(first_heading + angle - 90)
+        self._update_absolute_group_angles(group_landmarks)
         self.group_rotation_edit.clear()
         self.dirty = True
         self.canvas.update()
@@ -2254,9 +2609,7 @@ class LandmarkEditor(QMainWindow):
             name = self._selected_landmark_name()
             if name is None:
                 return
-            landmark = self.landmarks[name]
-            landmark.x = image_point.x()
-            landmark.y = image_point.y()
+            self._move_connected_landmarks(name, image_point)
             if self.main_axis is not None and name in (
                 self.main_axis.start_landmark,
                 self.main_axis.end_landmark,
@@ -2353,6 +2706,30 @@ class LandmarkEditor(QMainWindow):
         alignment = self.main_axis.angle_from_vertical if self.main_axis else 0
         index = self.axis_alignment_combo.findData(alignment)
         self.axis_alignment_combo.setCurrentIndex(max(index, 0))
+
+    def _refresh_reference_frame_landmark_choices(self):
+        frame = self.reference_frame
+        selected_names = (
+            frame.origin_landmark if frame is not None else "",
+            frame.axis_start_landmark if frame is not None else "",
+            frame.axis_end_landmark if frame is not None else "",
+        )
+        landmark_names = list(self.landmarks)
+        for combo, selected_name in zip(
+            (
+                self.frame_origin_combo,
+                self.frame_axis_start_combo,
+                self.frame_axis_end_combo,
+            ),
+            selected_names,
+        ):
+            combo.clear()
+            combo.addItems(landmark_names)
+            if selected_name in landmark_names:
+                combo.setCurrentText(selected_name)
+        target_angle = frame.target_angle_from_vertical if frame else 0
+        index = self.frame_target_combo.findData(target_angle)
+        self.frame_target_combo.setCurrentIndex(max(index, 0))
 
     def _refresh_distance_landmark_choices(self):
         selected_start = self.distance_start_combo.currentText()
@@ -2548,6 +2925,7 @@ class LandmarkEditor(QMainWindow):
         self._refresh_groups()
         self._refresh_curves()
         self._refresh_distances()
+        self._refresh_reference_frame_landmark_choices()
         self.canvas.update()
 
     def _sync_canvas_data(self):
@@ -2555,6 +2933,7 @@ class LandmarkEditor(QMainWindow):
         self.canvas.groups = self.groups
         self.canvas.distances = self.distances
         self.canvas.main_axis = self.main_axis
+        self.canvas.reference_frame = self.reference_frame
         self.canvas.pending_axis_points = self.pending_axis_points
 
     def save_json(self):
@@ -2567,6 +2946,7 @@ class LandmarkEditor(QMainWindow):
             self.curves,
             self.main_axis,
             self.distances,
+            self.reference_frame,
         )
         if errors:
             QMessageBox.warning(self, "Save JSON", "\n".join(errors))
@@ -2586,6 +2966,7 @@ class LandmarkEditor(QMainWindow):
                         self.image_rotation,
                         output_path,
                         self.distances,
+                        self.reference_frame,
                     )
                 )
                 project["definitions"] = definition_data["project_definition"]
@@ -2621,6 +3002,7 @@ class LandmarkEditor(QMainWindow):
                     self.image_rotation,
                     output_path,
                     self.distances,
+                    self.reference_frame,
                 ),
                 encoding="utf-8",
             )

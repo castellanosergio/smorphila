@@ -21,6 +21,11 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+try:
+    from .coordinate_pipeline import derive_coordinates, legacy_semilandmarks_to_raw
+except ImportError:  # Support running this module directly.
+    from coordinate_pipeline import derive_coordinates, legacy_semilandmarks_to_raw
+
 
 # ============================================================
 # 1. READ JSON PROJECT
@@ -56,6 +61,26 @@ def read_project(json_path):
         raise ValueError(
             "The 'individuals' section must be a dictionary."
         )
+
+    definitions = project.get("definitions", {})
+    for individual in project["individuals"].values():
+        if not isinstance(individual, dict):
+            continue
+        raw_landmarks = individual.get("landmarks_raw", individual.get("landmarks", {}))
+        raw_semilandmarks = individual.get("semilandmarks", {})
+        if "landmarks_raw" in individual:
+            raw_semilandmarks = legacy_semilandmarks_to_raw(
+                raw_semilandmarks,
+                individual.get("raw_to_display_transform"),
+                individual.get("coordinate_display_offset", [0.0, 0.0]),
+            )
+        landmarks, semilandmarks = derive_coordinates(
+            raw_landmarks,
+            raw_semilandmarks,
+            definitions,
+        )
+        individual["landmarks"] = landmarks
+        individual["semilandmarks"] = semilandmarks
 
     return project
 
@@ -251,12 +276,18 @@ def get_scale(individual_data):
 
 
 def scale_coordinates(coordinates, scale):
-    """Convert pixel coordinates to real-length coordinates."""
+    """Convert coordinates to real units, or retain pixels without a scale."""
 
     if scale is None:
-        return math.nan, math.nan
+        return coordinates[0], coordinates[1]
 
     return coordinates[0] * scale, coordinates[1] * scale
+
+
+def coordinate_unit(scale, unit):
+    """Return the exported coordinate unit for calibrated and raw data."""
+
+    return unit if scale is not None else "px"
 
 
 def get_distance_landmarks(project, distance_name):
@@ -675,6 +706,7 @@ def export_txt(
             )
 
             scale, unit = get_scale(individual_data)
+            unit = coordinate_unit(scale, unit)
 
 
             for point_name, x, y in points:
@@ -1258,8 +1290,8 @@ class ExportDialog(QDialog):
                 self,
                 "Missing scale information",
                 "Scale information is missing or invalid for the following "
-                "individuals. Their exported coordinates and distances will "
-                "be written as nan:\n\n"
+                "individuals. Their coordinates will be exported in pixels "
+                "(px); real-unit distances will be written as nan:\n\n"
                 + "\n".join(missing_scale),
             )
 

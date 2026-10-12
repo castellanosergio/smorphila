@@ -71,12 +71,15 @@ class ProjectHub(QMainWindow):
         summary = QFormLayout()
         self.project_name_label = QLabel("No project open")
         self.project_path_label = QLabel("")
+        self.definition_image_label = QLabel("")
         self.definition_label = QLabel("")
         self.individual_label = QLabel("")
         self.record_status_label = QLabel("")
         self.project_path_label.setWordWrap(True)
+        self.definition_image_label.setWordWrap(True)
         summary.addRow("Project:", self.project_name_label)
         summary.addRow("File:", self.project_path_label)
+        summary.addRow("Definition image:", self.definition_image_label)
         summary.addRow("Definitions:", self.definition_label)
         summary.addRow("Individuals:", self.individual_label)
         summary.addRow("Record status:", self.record_status_label)
@@ -149,6 +152,7 @@ class ProjectHub(QMainWindow):
         if not is_open:
             self.project_name_label.setText("No project open")
             self.project_path_label.clear()
+            self.definition_image_label.clear()
             self.definition_label.clear()
             self.individual_label.clear()
             self.record_status_label.clear()
@@ -158,6 +162,9 @@ class ProjectHub(QMainWindow):
         definitions = project["definitions"]
         self.project_name_label.setText(str(project["project"].get("name", "Untitled")))
         self.project_path_label.setText(str(self.project_path))
+        self.definition_image_label.setText(
+            str(definitions.get("source_image", ""))
+        )
         self.definition_label.setText(
             f"{len(definitions.get('landmarks', {}))} landmarks, "
             f"{len(definitions.get('distances', {}))} distances"

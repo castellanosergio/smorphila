@@ -1,0 +1,1 @@
+"""SMORPHILA application package."""

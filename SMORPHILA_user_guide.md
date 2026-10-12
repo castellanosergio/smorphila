@@ -5,10 +5,10 @@ The normal starting point is the Project Hub.
 
 ## Start SMORPHILA
 
-From the `smorphila` folder, run:
+From the project root folder, run:
 
 ```powershell
-uv run main.py
+uv run python src/start.py
 ```
 
 Use the hub to create or open a project, define its structure, acquire individual
@@ -43,18 +43,43 @@ segments. Relative angle constraints can be selected from the angle diagram.
 Use **Create idealized polyline** during acquisition to apply the group constraints
 to the measured landmarks.
 
-### Reference axis
+### Reference settings
 
-The reference axis can use two landmark anchors and a vertical or horizontal target
-alignment.
+Reference settings have two independent purposes: optional image alignment and the
+analytical reference frame used for coordinates.
 
-- Select the anchors and alignment in the **Reference axis** panel, then select
-  **Update reference axis** to create or modify it.
-- **Define from image** is an alternative workflow that selects the two anchors by
-  clicking the image.
-- **Use image vertical default** removes the custom axis.
+#### Image alignment (optional)
 
-Changing the axis recalculates the preview rotation in the definition editor.
+Use the two anchors and the vertical or horizontal alignment in the upper part of
+the **Reference settings** panel to rotate the image preview. Select **Update
+reference axis** to set the anchors, or select **Define from image** and click the
+two placed landmarks. Select **Use image vertical default** to remove the custom
+image alignment.
+
+Image alignment is only a visual aid. It does not define the coordinate system used
+for export.
+
+#### Analytical reference frame
+
+The analytical reference frame defines reproducible coordinates from the idealized
+landmark geometry. Select:
+
+- an **Origin landmark**, which becomes coordinate `(0, 0)`;
+- two distinct axis landmarks, which define the axis direction; and
+- a **Target orientation** of vertical or horizontal.
+
+Select **Update analytical frame** to save the frame, or **Clear analytical frame**
+to remove it. The axis landmarks and the origin must be defined landmarks, but the
+origin may also be one of the axis landmarks.
+
+When an analytical frame is configured, SMORPHILA first applies the landmark-group
+constraints, then centres the idealized landmarks on the origin and rotates them to
+the target orientation. Coordinates use an upward-positive Y axis. The same
+transformation is applied to semilandmarks during export.
+
+Use image alignment when a consistent on-screen orientation is convenient during
+data entry. Use the analytical reference frame when exported coordinates must share
+a consistent origin and orientation across individuals.
 
 ### Curves and semilandmarks
 
@@ -76,8 +101,8 @@ Save the definition project when finished.
 Select **Acquire data** in the Project Hub and use **File > Open image**.
 
 1. Place the required landmarks.
-2. Select **Landmarks > Create idealized polyline** when the landmark groups and
-   reference axis must be applied.
+2. Select **Landmarks > Create idealized polyline** to apply the landmark-group
+   constraints.
 3. To acquire a curve, select **Landmarks > Manual semilandmarks**.
 4. Choose a configured curve. Both of its anchor landmarks must already be placed.
 5. Click successive points along the visible anatomical curve, then double-click to
@@ -87,10 +112,11 @@ SMORPHILA preserves the manually traced polyline and resamples it at equal dista
 along its length. It does not replace the traced curve with a straight line between
 the anchors.
 
-When reopening a saved individual with a reference axis and landmark groups,
-SMORPHILA rebuilds the alignment and idealized polyline from the saved raw landmarks.
-This keeps the raw landmarks, corrected landmarks, image transformation, and
-semilandmarks in compatible coordinate systems.
+When reopening a saved individual with landmark groups, SMORPHILA rebuilds the
+idealized polyline from the saved raw landmarks. If an analytical reference frame is
+configured, it is applied to the idealized landmarks and semilandmarks when
+coordinates are derived for export. This keeps raw measurements and derived
+coordinates in compatible coordinate systems.
 
 Save the individual with **File > Save data**. The image is renamed to the individual
 code and the individual record is stored in the project JSON.

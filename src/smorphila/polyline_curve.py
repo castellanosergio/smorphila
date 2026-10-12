@@ -126,7 +126,10 @@ class SpezzataCurva:
         except ValueError as error:
             QMessageBox.warning(self.viewer, "Semilandmarks", str(error))
             return
-        self.viewer.semilandmarks[self.curve_name]["coordinates"] = coordinates
+        self.viewer.semilandmarks[self.curve_name]["coordinates"] = [
+            self.viewer.analytical_to_raw_point(QPointF(*point))
+            for point in coordinates
+        ]
 
         curve_layer = f"curve:{self.curve_name}"
         self.viewer.layer_manager.clear_layer(curve_layer)
@@ -134,6 +137,7 @@ class SpezzataCurva:
             curve_layer, coordinates, color=self.color_points
         )
         self.viewer.layer_manager.create_layer("semilandmarks")
+        self.viewer._set_layer_visibility("semilandmarks", True)
         self.viewer.layer_manager.clear_layer("preview")
         self.viewer.layer_manager.update_display()
         self.active = False

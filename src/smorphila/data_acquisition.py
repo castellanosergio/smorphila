@@ -22,7 +22,6 @@ from PySide6.QtWidgets import (
     QComboBox,
     QFileDialog,
     QGridLayout,
-    QInputDialog,
     QLabel,
     QMainWindow,
     QMenu,
@@ -36,11 +35,9 @@ from PySide6.QtWidgets import (
 
 from . import save_data
 from .calibration import CalibrationPlugin
-from .contour import ContourPlugin
 from .image_aligner import ImageAligner
 from .insert_landmarks import LandmarkPlugin
 from .layer_manager import LayerManager
-from .layers_management import LayerPlugin
 from .limbs import ArtiPlugin
 from .polyline_curve import SpezzataCurva
 from .polyline_curve_ols import SpezzataAligner
@@ -270,12 +267,16 @@ class ImageViewer(QMainWindow):
         self.curves = {}
         self.main_axis = None
         self.reference_axis = None
+        self.reference_frame = None
         self.reference_axis_aligned = False
         self.coordinate_display_offset = (0.0, 0.0)
         self.raw_to_display_transform = None
+        self.definition_source_image: pl.Path | None = None
+        self.definition_landmarks: dict | None = None
         self.semilandmarks = {}
         self.landmarks = self.init_landmarks(self.landmark_names)
         self.landmarks_raw: dict | None = None
+        self.idealized_source_landmarks: dict | None = None
 
         self.scale_factor = 1
 
@@ -343,20 +344,38 @@ class ImageViewer(QMainWindow):
         save_data_action.triggered.connect(self.save_data)
         file_menu.addAction(save_data_action)
 
-        constrained_landmarks_action = QAction("Show constrained landmarks", self)
-        self.constrained_landmarks_action = constrained_landmarks_action
-        constrained_landmarks_action.setCheckable(True)
-        constrained_landmarks_action.setChecked(True)
-        constrained_landmarks_action.triggered.connect(
+        self.adjusted_landmarks_action = QAction("Show adjusted landmarks", self)
+        self.adjusted_landmarks_action.setCheckable(True)
+        self.adjusted_landmarks_action.triggered.connect(
             lambda visible: self._set_layer_visibility("landmarks", visible)
         )
-        raw_landmarks_action = QAction("Show raw landmarks", self)
-        raw_landmarks_action.setCheckable(True)
-        raw_landmarks_action.triggered.connect(
+        self.raw_landmarks_action = QAction("Show raw landmarks", self)
+        self.raw_landmarks_action.setCheckable(True)
+        self.raw_landmarks_action.triggered.connect(
             lambda visible: self._set_layer_visibility("landmarks_raw", visible)
         )
-        view_menu.addAction(constrained_landmarks_action)
-        view_menu.addAction(raw_landmarks_action)
+        self.idealized_polyline_action = QAction("Show idealized polyline", self)
+        self.idealized_polyline_action.setCheckable(True)
+        self.idealized_polyline_action.triggered.connect(
+            lambda visible: self._set_layer_visibility(
+                "spezzata_idealizzata", visible
+            )
+        )
+        self.semilandmarks_action = QAction("Show semilandmarks", self)
+        self.semilandmarks_action.setCheckable(True)
+        self.semilandmarks_action.triggered.connect(
+            lambda visible: self._set_layer_visibility("semilandmarks", visible)
+        )
+        self.layer_actions = {
+            "landmarks": self.adjusted_landmarks_action,
+            "landmarks_raw": self.raw_landmarks_action,
+            "spezzata_idealizzata": self.idealized_polyline_action,
+            "semilandmarks": self.semilandmarks_action,
+        }
+        view_menu.addAction(self.raw_landmarks_action)
+        view_menu.addAction(self.adjusted_landmarks_action)
+        view_menu.addAction(self.idealized_polyline_action)
+        view_menu.addAction(self.semilandmarks_action)
 
         zoom_in_action = QAction("Zoom in", self)
         zoom_out_action = QAction("Zoom out", self)
@@ -379,10 +398,8 @@ class ImageViewer(QMainWindow):
         self.spezzata_plugin = SpezzataAligner(self)
         self.insert_landmarks = LandmarkPlugin(self)
         self.image_aligner = ImageAligner(self)
-        self.rileva_contorno = ContourPlugin(self)
         self.spezzata_curva = SpezzataCurva(self)
         self.calibrazione = CalibrationPlugin(self)
-        self.gestione_layers = LayerPlugin(self)
 
         # Add plugin to the Landmarks menu
         spezzata_action = QAction("Align polyline (CTRL+I)", self)
@@ -400,34 +417,19 @@ class ImageViewer(QMainWindow):
         landmarks_menu.addAction(landmarks_action)
 
         # Add plugin to the Landmarks menu
-        contour_action = QAction("Find contours", self)
-        contour_action.triggered.connect(self.rileva_contorno.extract_contours)
-        landmarks_menu.addAction(contour_action)
-
-        # Add plugin to the Landmarks menu
         spezzatacurva_action = QAction("Manual semilandmarks", self)
         spezzatacurva_action.triggered.connect(self.spezzata_curva.start)
         landmarks_menu.addAction(spezzatacurva_action)
 
         # Add plugin to the Edit menu
-        rotate_action = QAction("Rotate image", self)
-        rotate_action.triggered.connect(self.rotate_image_dialog)
-        edit_menu.addAction(rotate_action)
-
-        # Add plugin to the Edit menu
-        align_action = QAction("Align image", self)
-        align_action.triggered.connect(self.image_aligner.align_image)
-        edit_menu.addAction(align_action)
+        self.align_image_action = QAction("Align image", self)
+        self.align_image_action.triggered.connect(self.image_aligner.align_image)
+        edit_menu.addAction(self.align_image_action)
 
         # Add calibration plugin
         calibrazione_action = QAction("Calibrate scale", self)
         calibrazione_action.triggered.connect(self.calibrazione.activate)
         edit_menu.addAction(calibrazione_action)
-
-        # Add layer management plugin
-        gestisci_action = QAction("Manage layers", self)
-        gestisci_action.triggered.connect(self.gestione_layers.activate)
-        view_menu.addAction(gestisci_action)
 
         # SHORTCUTS
 
@@ -640,7 +642,15 @@ class ImageViewer(QMainWindow):
                 "start_landmark": start_landmark,
                 "end_landmark": end_landmark,
             }
-        return names, landmarks, groups, definitions.get("reference_axis"), curves
+        return (
+            names,
+            landmarks,
+            groups,
+            definitions.get("reference_axis"),
+            definitions.get("reference_frame"),
+            curves,
+            definitions.get("source_image"),
+        )
 
     def load_project(self):
         project_name, _ = QFileDialog.getOpenFileName(
@@ -658,18 +668,24 @@ class ImageViewer(QMainWindow):
                     landmarks,
                     groups,
                     reference_axis,
+                    reference_frame,
                     curves,
+                    source_image,
                 ) = self._read_unified_project(project_path)
             else:
                 names, landmarks, groups = self._read_project(project_path)
                 reference_axis = None
+                reference_frame = None
                 curves = {}
+                source_image = None
         except (TypeError, ValueError) as error:
             QMessageBox.critical(self, "Load project", str(error))
             return
         self.landmark_names = names
         self.landmarks_groups = groups
         self.reference_axis = reference_axis
+        self.reference_frame = reference_frame
+        self._update_alignment_action()
         self.curves = curves
         self.semilandmarks = {
             name: {
@@ -680,12 +696,31 @@ class ImageViewer(QMainWindow):
             for name, curve in curves.items()
         }
         self.landmarks = landmarks
+        self.landmarks_raw = copy.deepcopy(landmarks)
+        self.definition_landmarks = copy.deepcopy(landmarks)
+        self.definition_source_image = (
+            (project_path.parent / source_image).resolve()
+            if isinstance(source_image, str) and source_image
+            else None
+        )
         self.refresh_landmark_choices()
         self.project_path = (
             project_path if project_path.suffix.lower() == ".json" else None
         )
         self.layer_manager.update_display()
         self.status_bar.showMessage(f"Project loaded: {project_path.name}")
+
+    def _update_alignment_action(self):
+        """Disable image alignment when the project owns the analytical frame."""
+
+        uses_analytical_frame = isinstance(self.reference_frame, dict)
+        self.align_image_action.setEnabled(not uses_analytical_frame)
+        if uses_analytical_frame:
+            self.align_image_action.setToolTip(
+                "The project analytical frame is derived during export."
+            )
+        else:
+            self.align_image_action.setToolTip("")
 
     def load(self):
         initial_directory = ""
@@ -706,12 +741,19 @@ class ImageViewer(QMainWindow):
             return
         self.glb = [file_path]
         self.idx = 0
-        individual_data = self._individual_for_image(pl.Path(file_path))
+        image_path = pl.Path(file_path)
+        definition_image = self._is_definition_source_image(image_path)
+        individual_data = self._individual_for_image(image_path)
         self.load_image(self.glb[self.idx])
         if individual_data is not None:
             self._load_individual_data(individual_data)
             self.status_bar.showMessage(
                 f"Image loaded: {self.code} (project data found)"
+            )
+        elif definition_image:
+            self._load_definition_landmarks()
+            self.status_bar.showMessage(
+                "Definition image loaded: project landmarks shown"
             )
         elif pl.Path(file_path).with_suffix(".json").is_file():
             self.load_json(pl.Path(file_path).with_suffix(".json"))
@@ -728,6 +770,8 @@ class ImageViewer(QMainWindow):
     def apply_reference_axis_alignment(self) -> bool:
         """Align all placed landmarks using the configured reference axis."""
 
+        if isinstance(self.reference_frame, dict):
+            return True
         if self.reference_axis_aligned:
             return True
         axis = self.reference_axis
@@ -750,9 +794,39 @@ class ImageViewer(QMainWindow):
                 "Place both reference-axis landmarks before creating the idealized polyline.",
             )
             return False
-        self.image_aligner.align_project_reference_axis(landmark_names)
+        self.image_aligner.align_project_reference_axis(
+            landmark_names, axis.get("angle_from_vertical", 0)
+        )
         self.reference_axis_aligned = True
         return True
+
+    def idealized_source_from_raw(self) -> dict:
+        """Return original landmark positions in the current analytical frame."""
+
+        raw_landmarks = self.landmarks_raw
+        if not isinstance(raw_landmarks, dict):
+            raw_landmarks = self.landmarks
+        source_landmarks = copy.deepcopy(raw_landmarks)
+        transform_data = self.raw_to_display_transform
+        if not self.reference_axis_aligned or not isinstance(transform_data, dict):
+            return source_landmarks
+
+        transform = QTransform(
+            transform_data["m11"], transform_data["m12"], 0.0,
+            transform_data["m21"], transform_data["m22"], 0.0,
+            transform_data["dx"], transform_data["dy"], 1.0,
+        )
+        offset_x, offset_y = self.coordinate_display_offset
+        for landmark in source_landmarks.values():
+            coordinates = landmark.get("coordinates")
+            if not coordinates:
+                continue
+            aligned = transform.map(QPointF(*coordinates))
+            landmark["coordinates"] = (
+                aligned.x() - offset_x,
+                aligned.y() - offset_y,
+            )
+        return source_landmarks
 
     def load_json(self, file_path):
         """Load a legacy individual JSON file."""
@@ -779,6 +853,26 @@ class ImageViewer(QMainWindow):
             return None
         return None
 
+    def _is_definition_source_image(self, image_path: pl.Path) -> bool:
+        """Return whether an image is the project definition source image."""
+
+        if self.definition_source_image is None:
+            return False
+        try:
+            return image_path.resolve() == self.definition_source_image
+        except OSError:
+            return False
+
+    def _load_definition_landmarks(self):
+        """Show definition coordinates without applying individual processing."""
+
+        if not isinstance(self.definition_landmarks, dict):
+            return
+        self.landmarks = copy.deepcopy(self.definition_landmarks)
+        self.landmarks_raw = copy.deepcopy(self.definition_landmarks)
+        self._initialize_analysis_layers(raw_visible=False)
+        self._set_layer_visibility("landmarks", True)
+
     def _load_individual_data(self, d):
         """Load one individual record from either supported JSON format."""
 
@@ -786,22 +880,15 @@ class ImageViewer(QMainWindow):
         self.scale_unit = d["scale_unit"]
 
         self.code = d["code"]
-        self.mass_value = d["mass_value"]
+        self.mass_value = d.get("mass_value", 0.0)
         landmarks_json = d["landmarks"]
         raw_landmarks = d.get("landmarks_raw", landmarks_json)
         if not isinstance(raw_landmarks, dict):
             raw_landmarks = landmarks_json
         self.landmarks_raw = copy.deepcopy(raw_landmarks)
-        rebuild_idealized_polyline = isinstance(self.reference_axis, dict) and bool(
-            self.landmarks_groups
-        )
-        loaded_landmarks = (
-            raw_landmarks if rebuild_idealized_polyline else landmarks_json
-        )
-        self.layer_manager.create_layer("landmarks")
-        self.layer_manager.create_layer("landmarks_raw")
-        self.layer_manager.visible["landmarks"] = True
-        self.layer_manager.visible["landmarks_raw"] = False
+        rebuild_idealized_polyline = bool(self.landmarks_groups)
+        loaded_landmarks = raw_landmarks if rebuild_idealized_polyline else landmarks_json
+        self._initialize_analysis_layers(raw_visible=False)
 
         # Make it possible to add or remove landmarks
         for key in self.landmarks:
@@ -814,6 +901,14 @@ class ImageViewer(QMainWindow):
         if not isinstance(self.semilandmarks_json, dict):
             self.semilandmarks_json = {}
 
+        legacy_coordinates = "landmarks_raw" in d
+        if legacy_coordinates:
+            self.raw_to_display_transform = d.get("raw_to_display_transform")
+            self.coordinate_display_offset = tuple(
+                d.get("coordinate_display_offset", [0.0, 0.0])
+            )
+
+        semilandmarks_loaded = False
         for key, semilandmark in self.semilandmarks.items():
             saved_semilandmark = self.semilandmarks_json.get(key)
             if not isinstance(saved_semilandmark, dict):
@@ -823,8 +918,19 @@ class ImageViewer(QMainWindow):
             coordinates = saved_semilandmark.get("coordinates", [])
             if not isinstance(coordinates, list):
                 continue
-            semilandmark["coordinates"] = coordinates
+            if legacy_coordinates:
+                semilandmark["coordinates"] = [
+                    self.analytical_to_raw_point(QPointF(*point))
+                    for point in coordinates
+                    if isinstance(point, (list, tuple)) and len(point) == 2
+                ]
+            else:
+                semilandmark["coordinates"] = coordinates
             self.layer_manager.create_layer("semilandmarks")
+            semilandmarks_loaded = True
+
+        if semilandmarks_loaded:
+            self._set_layer_visibility("semilandmarks", True)
 
         if rebuild_idealized_polyline:
             self.angle_deg = 0
@@ -834,7 +940,6 @@ class ImageViewer(QMainWindow):
             self.plugin_arti.activate()
         else:
             self.angle_deg = 0
-            self.rotate_angle(d["angle_deg"])
             self.reference_axis_aligned = bool(d.get("reference_axis_aligned", False))
             self.coordinate_display_offset = tuple(
                 d.get("coordinate_display_offset", [0.0, 0.0])
@@ -846,16 +951,51 @@ class ImageViewer(QMainWindow):
             self.scale_label.setText(f"Scale: {self.scale:.4f} {self.scale_unit}/px")
 
     def _set_layer_visibility(self, name: str, visible: bool):
+        action = self.layer_actions.get(name)
+        if action is not None and action.isChecked() != visible:
+            action.setChecked(visible)
         if name in self.layer_manager.layers:
             self.layer_manager.visible[name] = visible
-            if name == "landmarks":
-                self.constrained_landmarks_action.setChecked(visible)
             self.layer_manager.update_display()
+
+    def analytical_to_raw_point(self, point: QPointF) -> tuple[float, float]:
+        """Convert an analytical point back to original image-pixel coordinates."""
+
+        transform_data = self.raw_to_display_transform
+        if not isinstance(transform_data, dict):
+            return point.x(), point.y()
+        transform = QTransform(
+            transform_data["m11"], transform_data["m12"], 0.0,
+            transform_data["m21"], transform_data["m22"], 0.0,
+            transform_data["dx"], transform_data["dy"], 1.0,
+        )
+        inverse, invertible = transform.inverted()
+        if not invertible:
+            return point.x(), point.y()
+        offset_x, offset_y = self.coordinate_display_offset
+        raw_point = inverse.map(QPointF(point.x() + offset_x, point.y() + offset_y))
+        return raw_point.x(), raw_point.y()
+
+    def _initialize_analysis_layers(self, raw_visible: bool):
+        """Create the analysis layers and set their initial visibility."""
+
+        for name in (
+            "landmarks_raw",
+            "landmarks",
+            "spezzata_idealizzata",
+            "semilandmarks",
+        ):
+            self.layer_manager.create_layer(name)
+        self._set_layer_visibility("landmarks_raw", raw_visible)
+        self._set_layer_visibility("landmarks", not raw_visible)
+        self._set_layer_visibility("spezzata_idealizzata", False)
+        self._set_layer_visibility("semilandmarks", False)
 
     def load_image(self, file_name):
         self.reset_all()
         self.reference_axis_aligned = False
-        self.landmarks_raw = None
+        self.landmarks_raw = copy.deepcopy(self.landmarks)
+        self.idealized_source_landmarks = None
         self.coordinate_display_offset = (0.0, 0.0)
         self.raw_to_display_transform = None
         self.pixmap = QPixmap()
@@ -880,6 +1020,7 @@ class ImageViewer(QMainWindow):
         self.scaled_pixmap = scaled_pixmap
 
         self.image.setPixmap(scaled_pixmap)
+        self._initialize_analysis_layers(raw_visible=True)
         self.nome_file = pl.Path(file_name).name
         self.DIR_PNG = pl.Path(file_name).parent
         self.file_path = pl.Path(file_name)
@@ -918,40 +1059,6 @@ class ImageViewer(QMainWindow):
 
         self.landmarks = {name: {"coordinates": [], "color": None} for name in names}
         return self.landmarks
-
-    def rotate_image_dialog(self):
-        """
-        Ask for the image rotation angle
-        """
-        angle, ok = QInputDialog.getDouble(
-            self, "Rotate image", "Angle (degrees):", 0.0, -360.0, 360.0, 1
-        )
-        if ok:
-            self.rotate_angle(angle)
-
-    def rotate_angle(self, angle):
-        """
-        Rotate the image by an arbitrary angle
-        """
-        transform = QTransform()
-        transform.rotate(angle)
-
-        rotated_pixmap = self.pixmap.transformed(transform, Qt.SmoothTransformation)
-        container_size = self.scroll_area.viewport().size()
-        scaled_rotated = rotated_pixmap.scaled(
-            container_size, Qt.KeepAspectRatio, Qt.SmoothTransformation
-        )
-        self.scaled_pixmap = scaled_rotated
-        self.pixmap = rotated_pixmap  # also update the original
-        self.image.setPixmap(scaled_rotated)
-        self.reset_view_rect()
-        if self.angle_deg:
-            self.angle_deg += angle
-        else:
-            self.angle_deg = angle
-        self.layer_manager.update_display()
-
-        print(f"{self.angle_deg=}")
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -1056,6 +1163,8 @@ class ImageViewer(QMainWindow):
 
     def reset(self):
         self.init_landmarks(self.landmark_names)
+        self.landmarks_raw = copy.deepcopy(self.landmarks)
+        self.idealized_source_landmarks = None
         self.layer_manager.update_display()
 
     def save_data(self):
@@ -1115,6 +1224,8 @@ class ImageViewer(QMainWindow):
 
         # Landmarks: reset the structure
         self.init_landmarks(self.landmark_names)
+        self.landmarks_raw = copy.deepcopy(self.landmarks)
+        self.idealized_source_landmarks = None
 
         # Deactivate plugins
         self.disattiva_tutti_i_plugin()
