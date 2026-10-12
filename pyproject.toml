@@ -1,6 +1,6 @@
 [project]
 name = "smorphila"
-version = "0.1.0"
+version = "0.6.0"
 description = "Software for MORPHometric Image Landmark Acquisition"
 authors = [{ name="Sergio Castellano", email="sergio.castellano@unito.it" }, { name="Olivier Friard", email="olivier.friard@unito.it" }]
 readme = "README.md"

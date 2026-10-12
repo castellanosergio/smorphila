@@ -43,8 +43,6 @@ from .polyline_curve import SpezzataCurva
 from .polyline_curve_ols import SpezzataAligner
 from .project_store import load_project
 
-__version__ = "0.0.4"
-__version_date__ = "2025-05-28"
 IMAGE_EXTENSION = "*.jpg *.JPG *.png *.PNG"
 
 
@@ -239,8 +237,6 @@ class ImageViewer(QMainWindow):
         self.setCentralWidget(self.central_widget)
 
         self.debug_mode = False
-        self.__version__ = __version__
-        self.__version_date__ = __version_date__
 
         grid = QGridLayout()
         grid.setSpacing(5)
@@ -357,9 +353,7 @@ class ImageViewer(QMainWindow):
         self.idealized_polyline_action = QAction("Show idealized polyline", self)
         self.idealized_polyline_action.setCheckable(True)
         self.idealized_polyline_action.triggered.connect(
-            lambda visible: self._set_layer_visibility(
-                "spezzata_idealizzata", visible
-            )
+            lambda visible: self._set_layer_visibility("spezzata_idealizzata", visible)
         )
         self.semilandmarks_action = QAction("Show semilandmarks", self)
         self.semilandmarks_action.setCheckable(True)
@@ -812,9 +806,15 @@ class ImageViewer(QMainWindow):
             return source_landmarks
 
         transform = QTransform(
-            transform_data["m11"], transform_data["m12"], 0.0,
-            transform_data["m21"], transform_data["m22"], 0.0,
-            transform_data["dx"], transform_data["dy"], 1.0,
+            transform_data["m11"],
+            transform_data["m12"],
+            0.0,
+            transform_data["m21"],
+            transform_data["m22"],
+            0.0,
+            transform_data["dx"],
+            transform_data["dy"],
+            1.0,
         )
         offset_x, offset_y = self.coordinate_display_offset
         for landmark in source_landmarks.values():
@@ -887,7 +887,9 @@ class ImageViewer(QMainWindow):
             raw_landmarks = landmarks_json
         self.landmarks_raw = copy.deepcopy(raw_landmarks)
         rebuild_idealized_polyline = bool(self.landmarks_groups)
-        loaded_landmarks = raw_landmarks if rebuild_idealized_polyline else landmarks_json
+        loaded_landmarks = (
+            raw_landmarks if rebuild_idealized_polyline else landmarks_json
+        )
         self._initialize_analysis_layers(raw_visible=False)
 
         # Make it possible to add or remove landmarks
@@ -965,9 +967,15 @@ class ImageViewer(QMainWindow):
         if not isinstance(transform_data, dict):
             return point.x(), point.y()
         transform = QTransform(
-            transform_data["m11"], transform_data["m12"], 0.0,
-            transform_data["m21"], transform_data["m22"], 0.0,
-            transform_data["dx"], transform_data["dy"], 1.0,
+            transform_data["m11"],
+            transform_data["m12"],
+            0.0,
+            transform_data["m21"],
+            transform_data["m22"],
+            0.0,
+            transform_data["dx"],
+            transform_data["dy"],
+            1.0,
         )
         inverse, invertible = transform.inverted()
         if not invertible:
@@ -1045,7 +1053,9 @@ class ImageViewer(QMainWindow):
                     self.landmark_combo.setCurrentIndex(selected_index)
             for index, name in enumerate(names):
                 state = (
-                    "placed" if self.landmarks[name].get("coordinates") else "not placed"
+                    "placed"
+                    if self.landmarks[name].get("coordinates")
+                    else "not placed"
                 )
                 self.landmark_combo.setItemText(index, f"{name} ({state})")
         finally:

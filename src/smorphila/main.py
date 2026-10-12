@@ -38,6 +38,9 @@ except ImportError:
         save_project,
     )
 
+__version__ = "0.6.0"
+__version_date__ = "2026-10-12"
+
 
 class ProjectHub(QMainWindow):
     """Manage one project and launch its three workflow stages."""
@@ -162,9 +165,7 @@ class ProjectHub(QMainWindow):
         definitions = project["definitions"]
         self.project_name_label.setText(str(project["project"].get("name", "Untitled")))
         self.project_path_label.setText(str(self.project_path))
-        self.definition_image_label.setText(
-            str(definitions.get("source_image", ""))
-        )
+        self.definition_image_label.setText(str(definitions.get("source_image", "")))
         self.definition_label.setText(
             f"{len(definitions.get('landmarks', {}))} landmarks, "
             f"{len(definitions.get('distances', {}))} distances"
