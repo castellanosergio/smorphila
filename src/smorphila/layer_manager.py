@@ -146,16 +146,23 @@ class LayerManager:
                     for pt in punti:
                         painter.drawEllipse(pt, radius, radius)
 
+                elif name == "semilandmarks_raw":
+                    painter.setBrush(QColor(255, 165, 0, 180))
+                    painter.setPen(Qt.NoPen)
+                    for info in self.viewer.semilandmarks.values():
+                        for pt in info.get("coordinates", []):
+                            pt = self._raw_display_point(pt)
+                            if pt is not None:
+                                painter.drawEllipse(pt, radius, radius)
+
                 elif name == "semilandmarks":
                     punti = []
-                    for nome, info in self.viewer.semilandmarks.items():
+                    for info in self.viewer.adjusted_semilandmarks().values():
                         punti = info.get("coordinates")
                         painter.setBrush(QColor(0, 255, 0, 180))
                         painter.setPen(Qt.NoPen)
                         for pt in punti:
-                            pt = self._raw_display_point(pt)
-                            if pt is None:
-                                continue
+                            pt = self._display_point(pt)
                             painter.drawEllipse(pt, radius, radius)
 
                 else:

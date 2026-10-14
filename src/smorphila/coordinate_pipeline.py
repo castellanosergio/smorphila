@@ -290,6 +290,10 @@ def legacy_semilandmarks_to_raw(semilandmarks, transform, offset):
     for curve in raw_semilandmarks.values():
         if not isinstance(curve, dict) or not isinstance(curve.get("coordinates"), list):
             continue
+        source_coordinates = curve.pop("source_coordinates", None)
+        if isinstance(source_coordinates, list):
+            curve["coordinates"] = source_coordinates
+            continue
         raw_points = []
         for point in curve["coordinates"]:
             if not isinstance(point, (list, tuple)) or len(point) != 2:
@@ -307,16 +311,90 @@ def legacy_semilandmarks_to_raw(semilandmarks, transform, offset):
     return raw_semilandmarks
 
 
+def normalize_raw_semilandmarks(semilandmarks):
+    """Return raw curve coordinates from current and legacy saved structures."""
+
+    raw_curves = copy.deepcopy(
+        semilandmarks if isinstance(semilandmarks, dict) else {}
+    )
+    for curve in raw_curves.values():
+        if not isinstance(curve, dict):
+            continue
+        source_coordinates = curve.pop("source_coordinates", None)
+        if isinstance(source_coordinates, list):
+            curve["coordinates"] = source_coordinates
+    return raw_curves
+
+
+def adjust_semilandmarks(semilandmarks_data, source_landmarks, adjusted_landmarks):
+    """Return curves rigidly transformed from raw to adjusted anchors."""
+
+    semilandmarks = normalize_raw_semilandmarks(semilandmarks_data)
+    for curve in semilandmarks.values():
+        if not isinstance(curve, dict):
+            continue
+        names = curve.get("landmarks")
+        coordinates = curve.get("coordinates")
+        if (
+            not isinstance(names, list)
+            or len(names) != 2
+            or not isinstance(coordinates, list)
+            or len(coordinates) < 2
+        ):
+            continue
+        source_start = _coordinates(source_landmarks.get(names[0]))
+        source_end = _coordinates(source_landmarks.get(names[1]))
+        adjusted_start = _coordinates(adjusted_landmarks.get(names[0]))
+        adjusted_end = _coordinates(adjusted_landmarks.get(names[1]))
+        if None in (source_start, source_end, adjusted_start, adjusted_end):
+            continue
+        source_dx = source_end[0] - source_start[0]
+        source_dy = source_end[1] - source_start[1]
+        target_dx = adjusted_end[0] - adjusted_start[0]
+        target_dy = adjusted_end[1] - adjusted_start[1]
+        if (
+            math.isclose(source_dx, 0.0)
+            and math.isclose(source_dy, 0.0)
+        ) or (
+            math.isclose(target_dx, 0.0)
+            and math.isclose(target_dy, 0.0)
+        ):
+            continue
+        angle = math.atan2(target_dy, target_dx) - math.atan2(
+            source_dy, source_dx
+        )
+        cosine = math.cos(angle)
+        sine = math.sin(angle)
+        transformed = []
+        for point in coordinates:
+            if not isinstance(point, (list, tuple)) or len(point) != 2:
+                transformed.append(point)
+                continue
+            delta_x = point[0] - source_start[0]
+            delta_y = point[1] - source_start[1]
+            transformed.append(
+                (
+                    adjusted_start[0] + delta_x * cosine - delta_y * sine,
+                    adjusted_start[1] + delta_x * sine + delta_y * cosine,
+                )
+            )
+        transformed[0] = adjusted_start
+        transformed[-1] = adjusted_end
+        curve["coordinates"] = transformed
+    return semilandmarks
+
+
 def derive_coordinates(raw_landmarks, raw_semilandmarks, definitions):
     """Return analytical landmark and semilandmark coordinates for export."""
 
     landmarks = copy.deepcopy(raw_landmarks if isinstance(raw_landmarks, dict) else {})
-    semilandmarks = copy.deepcopy(
-        raw_semilandmarks if isinstance(raw_semilandmarks, dict) else {}
-    )
+    semilandmarks = normalize_raw_semilandmarks(raw_semilandmarks)
     frame = _reference_frame(definitions)
     if frame is not None:
         idealized_landmarks = idealize_landmarks(landmarks, definitions)
+        semilandmarks = adjust_semilandmarks(
+            semilandmarks, landmarks, idealized_landmarks
+        )
         transform = _idealized_frame_transform(idealized_landmarks, frame)
         if transform is None:
             return idealized_landmarks, semilandmarks
@@ -359,7 +437,11 @@ def derive_coordinates(raw_landmarks, raw_semilandmarks, definitions):
             else point
             for point in curve["coordinates"]
         ]
+    source_landmarks = copy.deepcopy(landmarks)
     landmarks = idealize_landmarks(landmarks, definitions)
+    semilandmarks = adjust_semilandmarks(
+        semilandmarks, source_landmarks, landmarks
+    )
     for landmark in landmarks.values():
         point = _coordinates(landmark)
         if point is not None:

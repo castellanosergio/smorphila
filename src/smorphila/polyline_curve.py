@@ -60,8 +60,12 @@ class SpezzataCurva:
         curve = self.viewer.curves[curve_name]
         start_name = curve["start_landmark"]
         end_name = curve["end_landmark"]
-        start_coordinates = self.viewer.landmarks[start_name]["coordinates"]
-        end_coordinates = self.viewer.landmarks[end_name]["coordinates"]
+        start_coordinates = self.viewer.landmarks_raw.get(start_name, {}).get(
+            "coordinates"
+        )
+        end_coordinates = self.viewer.landmarks_raw.get(end_name, {}).get(
+            "coordinates"
+        )
         if not start_coordinates or not end_coordinates:
             QMessageBox.warning(
                 self.viewer,
@@ -105,8 +109,12 @@ class SpezzataCurva:
         curve = self.viewer.curves[self.curve_name]
         start_name = curve["start_landmark"]
         end_name = curve["end_landmark"]
-        start_anchor = tuple(self.viewer.landmarks[start_name]["coordinates"])
-        end_anchor = tuple(self.viewer.landmarks[end_name]["coordinates"])
+        start_anchor = self.viewer.raw_to_analytical_point(
+            self.viewer.landmarks_raw[start_name]["coordinates"]
+        )
+        end_anchor = self.viewer.raw_to_analytical_point(
+            self.viewer.landmarks_raw[end_name]["coordinates"]
+        )
         start_index = self.trova_punto_piu_vicino(start_anchor, self.points)
         end_index = self.trova_punto_piu_vicino(end_anchor, self.points)
         if start_index <= end_index:
@@ -126,9 +134,13 @@ class SpezzataCurva:
         except ValueError as error:
             QMessageBox.warning(self.viewer, "Semilandmarks", str(error))
             return
-        self.viewer.semilandmarks[self.curve_name]["coordinates"] = [
+        raw_coordinates = [
             self.viewer.analytical_to_raw_point(QPointF(*point))
             for point in coordinates
+        ]
+        self.viewer.semilandmarks[self.curve_name]["coordinates"] = raw_coordinates
+        coordinates = self.viewer.adjusted_semilandmarks()[self.curve_name][
+            "coordinates"
         ]
 
         curve_layer = f"curve:{self.curve_name}"

@@ -35,6 +35,7 @@ from PySide6.QtWidgets import (
 
 from . import save_data
 from .calibration import CalibrationPlugin
+from .coordinate_pipeline import adjust_semilandmarks
 from .image_aligner import ImageAligner
 from .insert_landmarks import LandmarkPlugin
 from .layer_manager import LayerManager
@@ -361,21 +362,30 @@ class ImageViewer(QMainWindow):
                 "spezzata_idealizzata", visible
             )
         )
-        self.semilandmarks_action = QAction("Show semilandmarks", self)
-        self.semilandmarks_action.setCheckable(True)
-        self.semilandmarks_action.triggered.connect(
+        self.idealized_semilandmarks_action = QAction(
+            "Show idealized semilandmarks", self
+        )
+        self.idealized_semilandmarks_action.setCheckable(True)
+        self.idealized_semilandmarks_action.triggered.connect(
             lambda visible: self._set_layer_visibility("semilandmarks", visible)
+        )
+        self.raw_semilandmarks_action = QAction("Show raw semilandmarks", self)
+        self.raw_semilandmarks_action.setCheckable(True)
+        self.raw_semilandmarks_action.triggered.connect(
+            lambda visible: self._set_layer_visibility("semilandmarks_raw", visible)
         )
         self.layer_actions = {
             "landmarks": self.adjusted_landmarks_action,
             "landmarks_raw": self.raw_landmarks_action,
             "spezzata_idealizzata": self.idealized_polyline_action,
-            "semilandmarks": self.semilandmarks_action,
+            "semilandmarks": self.idealized_semilandmarks_action,
+            "semilandmarks_raw": self.raw_semilandmarks_action,
         }
         view_menu.addAction(self.raw_landmarks_action)
         view_menu.addAction(self.adjusted_landmarks_action)
         view_menu.addAction(self.idealized_polyline_action)
-        view_menu.addAction(self.semilandmarks_action)
+        view_menu.addAction(self.raw_semilandmarks_action)
+        view_menu.addAction(self.idealized_semilandmarks_action)
 
         zoom_in_action = QAction("Zoom in", self)
         zoom_out_action = QAction("Zoom out", self)
@@ -915,10 +925,15 @@ class ImageViewer(QMainWindow):
                 continue
             if semilandmark["landmarks"] != saved_semilandmark.get("landmarks"):
                 continue
-            coordinates = saved_semilandmark.get("coordinates", [])
+            source_coordinates = saved_semilandmark.get("source_coordinates")
+            coordinates = (
+                source_coordinates
+                if isinstance(source_coordinates, list)
+                else saved_semilandmark.get("coordinates", [])
+            )
             if not isinstance(coordinates, list):
                 continue
-            if legacy_coordinates:
+            if legacy_coordinates and not isinstance(source_coordinates, list):
                 semilandmark["coordinates"] = [
                     self.analytical_to_raw_point(QPointF(*point))
                     for point in coordinates
@@ -954,8 +969,16 @@ class ImageViewer(QMainWindow):
         action = self.layer_actions.get(name)
         if action is not None and action.isChecked() != visible:
             action.setChecked(visible)
+        updated = False
         if name in self.layer_manager.layers:
             self.layer_manager.visible[name] = visible
+            updated = True
+        if name == "semilandmarks":
+            for layer_name in self.layer_manager.layers:
+                if layer_name.startswith("curve:"):
+                    self.layer_manager.visible[layer_name] = visible
+                    updated = True
+        if updated:
             self.layer_manager.update_display()
 
     def analytical_to_raw_point(self, point: QPointF) -> tuple[float, float]:
@@ -976,6 +999,42 @@ class ImageViewer(QMainWindow):
         raw_point = inverse.map(QPointF(point.x() + offset_x, point.y() + offset_y))
         return raw_point.x(), raw_point.y()
 
+    def raw_to_analytical_point(self, point) -> tuple[float, float]:
+        """Convert an original image-pixel point to the current analytical frame."""
+
+        if not isinstance(point, (list, tuple)) or len(point) != 2:
+            raise ValueError("A point must contain two coordinates.")
+        transform_data = self.raw_to_display_transform
+        if not isinstance(transform_data, dict):
+            return float(point[0]), float(point[1])
+        transform = QTransform(
+            transform_data["m11"], transform_data["m12"], 0.0,
+            transform_data["m21"], transform_data["m22"], 0.0,
+            transform_data["dx"], transform_data["dy"], 1.0,
+        )
+        display_point = transform.map(QPointF(*point))
+        offset_x, offset_y = self.coordinate_display_offset
+        return display_point.x() - offset_x, display_point.y() - offset_y
+
+    def adjusted_semilandmarks(self):
+        """Return raw curves transformed into the current adjusted landmark frame."""
+
+        source_landmarks = self.idealized_source_from_raw()
+        semilandmarks = copy.deepcopy(self.semilandmarks)
+        for curve in semilandmarks.values():
+            if not isinstance(curve, dict):
+                continue
+            coordinates = curve.get("coordinates")
+            if not isinstance(coordinates, list):
+                continue
+            curve["coordinates"] = [
+                self.raw_to_analytical_point(point)
+                if isinstance(point, (list, tuple)) and len(point) == 2
+                else point
+                for point in coordinates
+            ]
+        return adjust_semilandmarks(semilandmarks, source_landmarks, self.landmarks)
+
     def _initialize_analysis_layers(self, raw_visible: bool):
         """Create the analysis layers and set their initial visibility."""
 
@@ -983,12 +1042,14 @@ class ImageViewer(QMainWindow):
             "landmarks_raw",
             "landmarks",
             "spezzata_idealizzata",
+            "semilandmarks_raw",
             "semilandmarks",
         ):
             self.layer_manager.create_layer(name)
         self._set_layer_visibility("landmarks_raw", raw_visible)
         self._set_layer_visibility("landmarks", not raw_visible)
         self._set_layer_visibility("spezzata_idealizzata", False)
+        self._set_layer_visibility("semilandmarks_raw", False)
         self._set_layer_visibility("semilandmarks", False)
 
     def load_image(self, file_name):
