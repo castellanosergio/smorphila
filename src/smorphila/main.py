@@ -38,8 +38,8 @@ except ImportError:
         save_project,
     )
 
-__version__ = "0.6.0"
-__version_date__ = "2026-10-12"
+__version__ = "0.7.0"
+__version_date__ = "2026-10-15"
 
 
 class ProjectHub(QMainWindow):
